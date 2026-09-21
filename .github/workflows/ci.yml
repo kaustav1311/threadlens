@@ -1,14 +1,22 @@
 name: CI
 on: [push, pull_request]
-permissions: { contents: read }
+
+# Least privilege: CI only ever needs to read the tree.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to commit SHAs, not tags. A tag can be moved by whoever
+      # owns the action; a SHA cannot, so a compromised upstream tag cannot quietly
+      # start running in this repo. The trailing comment records the human version.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22 }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
 
       - name: Lexicons are in sync
@@ -20,8 +28,9 @@ jobs:
       # dist/ is committed so the page works offline and can be downloaded from a
       # release. If a UI change lands without a rebuild, the committed copy is a lie.
       - name: Committed dist matches the sources
-        run: git diff --exit-code -- dist/ python/threadlens/data/
-          || (echo "::error::dist/ or the copied lexicons are stale. Run 'make build' (or 'make sync') and commit the result." && exit 1)
+        run: |
+          git diff --exit-code -- dist/ python/threadlens/data/ \
+            || (echo "::error::dist/ or the copied lexicons are stale. Run 'make build' (or 'make sync') and commit the result." && exit 1)
 
       - name: JS tests
         run: node --test "web/test/*.test.js"

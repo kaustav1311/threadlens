@@ -2,57 +2,65 @@
 
 <header class="wrap top">
   <a class="brand" href="#top" id="top" aria-label="Threadlens home">
-    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="6" width="19" height="13" rx="4" fill="var(--accent)"/><rect x="11" y="13" width="19" height="13" rx="4" fill="none" stroke="var(--ink)" stroke-width="2.2"/><circle cx="20.5" cy="19.5" r="2.4" fill="var(--ink)"/></svg>
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="6" width="19" height="13" fill="var(--accent)"/><rect x="11" y="13" width="19" height="13" fill="none" stroke="var(--ink)" stroke-width="2.4"/><rect x="18" y="17" width="5" height="5" fill="var(--ink)"/></svg>
     threadlens
   </a>
   <nav class="nav" aria-label="Page">
+    <a href="#lenses">What it shows</a>
     <a href="#faq">How it works</a>
     <a href="#privacy">Privacy</a>
-    <a href="https://github.com/kaustav1311/threadlens" rel="noopener">GitHub</a>
+    <a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source</a>
   </nav>
 </header>
 
 <main>
   <section class="wrap hero" aria-labelledby="h1">
     <div class="hero-copy">
-      <h1 id="h1">Who actually started it?</h1>
-      <p class="lede">Drop in a WhatsApp export. Threadlens reads the whole argument and shows you how it really went &mdash; who asked, who asserted, who moved the goalposts, and who was just louder.</p>
-      <ul class="chips" aria-label="What you get">
-        <li><span class="ic" aria-hidden="true">&#9679;</span><b>Nothing uploaded.</b> It never leaves this tab.</li>
-        <li><span class="ic" aria-hidden="true">&#9632;</span><b>Both sides, one ruler.</b> Same counting for everyone.</li>
-        <li><span class="ic" aria-hidden="true">&#9650;</span><b>Free and open source.</b> MIT, no account.</li>
-      </ul>
+      <h1 id="h1">Who actually <em>started</em> it?</h1>
+      <p class="lede">Export the argument. Drop it in. Threadlens counts what both of you did &mdash; questions asked, claims made, sources given, goalposts moved &mdash; and applies the exact same ruler to each of you. Then you can stop arguing about who was worse and go read the evidence.</p>
     </div>
 
     <div class="drop">
-      <div class="zone" id="zone" tabindex="0" role="button" aria-describedby="drop-formats">
-        <strong id="drop-title">Drop the chat export here</strong>
-        <span class="formats" id="drop-formats">.zip, .txt or .docx &middot; up to 25&nbsp;MB &middot; or paste it</span>
-        <span class="line-sample" aria-label="Example of an export line">21/09/2026, 01:02 - Ravi: Ok since you love &ldquo;facts&rdquo; so much&hellip;</span>
-        <div class="row" style="justify-content:center">
-          <button class="btn primary" id="pick" type="button">Choose file</button>
-          <button class="btn" id="paste-toggle" type="button">Paste text</button>
-          <button class="btn ghost" id="load-sample" type="button">See a sample</button>
+      <div class="drop-head">
+        <span>threadlens &mdash; local analysis</span>
+        <span class="dotrow" aria-hidden="true"><i></i><i></i><i></i></span>
+      </div>
+      <div class="drop-body">
+        <div class="zone" id="zone" tabindex="0" role="button" aria-describedby="drop-formats">
+          <strong id="drop-title">Drop the chat export here</strong>
+          <span class="formats" id="drop-formats">.zip, .txt or .docx &middot; up to 25&nbsp;MB &middot; or paste it</span>
+          <span class="line-sample" aria-label="Example of an export line">21/09/2026, 01:02 - Ravi: Ok since you love &ldquo;facts&rdquo; so much&hellip;</span>
+          <div class="row center">
+            <button class="btn primary" id="pick" type="button">Choose file</button>
+            <button class="btn" id="paste-toggle" type="button">Paste text</button>
+            <button class="btn ghost" id="load-sample" type="button">Load the sample</button>
+          </div>
+          <input type="file" id="file" accept=".txt,.zip,.docx,text/plain,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
         </div>
-        <input type="file" id="file" accept=".txt,.zip,.docx,text/plain,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+        <div class="progress" id="progress" hidden>
+          <div class="bar" role="progressbar" aria-label="Reading the chat" aria-valuemin="0" aria-valuemax="100"><i id="progress-fill"></i></div>
+          <span class="progress-label" id="progress-label">Reading&hellip;</span>
+        </div>
+        <div id="paste-box" hidden>
+          <label for="paste" class="label">Paste the exported chat text</label>
+          <textarea id="paste" spellcheck="false" placeholder="21/09/2026, 01:02 - Name: message&hellip;"></textarea>
+          <div class="row tight"><button class="btn primary" id="paste-go" type="button">Analyse this</button></div>
+        </div>
+        <div class="opts">
+          <label><input type="checkbox" id="anon"> Hide names</label>
+          <label>Dates <select id="order"><option value="auto">Auto</option><option value="DMY">DD/MM/YY</option><option value="MDY">MM/DD/YY</option><option value="YMD">YYYY/MM/DD</option></select></label>
+          <label><input type="checkbox" id="showq" checked> Show quotes</label>
+        </div>
+        <p class="err" id="err" role="alert" hidden></p>
       </div>
-      <div class="progress" id="progress" hidden>
-        <div class="bar" role="progressbar" aria-label="Reading the chat" aria-valuemin="0" aria-valuemax="100"><i id="progress-fill"></i></div>
-        <span class="progress-label" id="progress-label">Reading&hellip;</span>
-      </div>
-      <div id="paste-box" hidden>
-        <label for="paste" class="eyebrow">Paste exported chat text</label>
-        <textarea id="paste" spellcheck="false" placeholder="21/09/2026, 01:02 - Name: message&hellip;"></textarea>
-        <div class="row" style="margin-top:8px"><button class="btn primary" id="paste-go" type="button">Analyse this</button></div>
-      </div>
-      <div class="opts">
-        <label><input type="checkbox" id="anon"> Hide names</label>
-        <label>Dates <select id="order"><option value="auto">Auto</option><option value="DMY">DD/MM/YY</option><option value="MDY">MM/DD/YY</option><option value="YMD">YYYY/MM/DD</option></select></label>
-        <label><input type="checkbox" id="showq" checked> Show quotes</label>
-      </div>
-      <p class="err" id="err" role="alert" hidden></p>
     </div>
   </section>
+
+  <ul class="wrap chips" aria-label="What this is">
+    <li><span class="ic" aria-hidden="true">01</span><span><b>It never leaves this tab.</b> No upload, no server, no account. The page is built so it physically cannot phone home.</span></li>
+    <li><span class="ic" aria-hidden="true">02</span><span><b>One ruler, both sides.</b> Every number is counted the same way for everyone, and every one of them shows its working.</span></li>
+    <li><span class="ic" aria-hidden="true">03</span><span><b>It will not take your side.</b> That is the entire discipline. Free, MIT, and the scoring is written down in the open.</span></li>
+  </ul>
 
   <div class="lensbar" id="lensbar">
     <div class="wrap">
@@ -69,60 +77,112 @@
   </div>
 
   <section class="wrap results" id="results" aria-live="polite" aria-busy="false"></section>
+  <div class="toastbox" id="toastbox" aria-live="polite" aria-atomic="false"></div>
+
+  <section class="wrap section" id="lenses" aria-labelledby="lenses-h">
+    <h2 id="lenses-h">Five lenses, five questions</h2>
+    <p class="lede-sm">Same chat, same numbers. Each lens just asks a different thing of them.</p>
+    <div class="faq">
+      <details open>
+        <summary>Overview &mdash; who talked, and when?</summary>
+        <p>Share of messages, words per message, who starts conversations after a six-hour gap, median reply time, and what hours you both keep. The baseline everything else sits on.</p>
+      </details>
+      <details>
+        <summary>Debate &mdash; how was the argument conducted?</summary>
+        <p>Questions versus assertions, absolutist words (<span class="mono">always, never, everyone</span>), evidence words, group labels, status put-downs, and a 0&ndash;1 heat trend. Plus moral vocabulary &mdash; whether one of you argues from fairness and the other from loyalty, which is usually why you are talking past each other.</p>
+      </details>
+      <details>
+        <summary>Rigor &mdash; who actually argued well?</summary>
+        <p>A score out of 100 for each person built from sourcing, answering the other's questions, staying on topic, conduct, hedging, and owning a mistake. It comes with a ledger of every factual claim and whether it cited anything. It says nothing about who is right, and it is built so that it <em>cannot</em>.</p>
+      </details>
+      <details>
+        <summary>Personal &mdash; who is carrying this?</summary>
+        <p>Who reaches out first, who replies faster, affection and apology words, and how the tone moved over time. Useful when the honest question is whether one of you has quietly stopped trying.</p>
+      </details>
+      <details>
+        <summary>Work &mdash; is this thread functioning?</summary>
+        <p>Responsiveness, action words, urgency words, politeness, and after-hours load. Handy evidence when someone insists they are &ldquo;always available&rdquo;.</p>
+      </details>
+    </div>
+  </section>
 
   <section class="wrap section" id="faq" aria-labelledby="faq-h">
     <h2 id="faq-h">How it works</h2>
     <ol class="steps">
       <li><h3>Export</h3><p>WhatsApp &rarr; the chat &rarr; <b>More &rarr; Export chat &rarr; Without media</b>.</p></li>
-      <li><h3>Drop it in</h3><p>Android or iPhone, 12- or 24-hour, .txt, .zip or a Word copy.</p></li>
-      <li><h3>Pick a lens</h3><p>Overview, Debate, Rigor, Personal or Work. Copy the report if you want it.</p></li>
+      <li><h3>Drop it in</h3><p>Android or iPhone, 12- or 24-hour, .txt, .zip or a Word copy. It is read in this tab.</p></li>
+      <li><h3>Pick a lens</h3><p>Then open any number to see exactly how it was counted.</p></li>
     </ol>
 
     <div class="faq">
       <details>
-        <summary>What does it actually measure?</summary>
-        <p>Counting, mostly, done evenly. <b>Questions vs assertions</b> &mdash; people testing a claim ask, people defending one assert. <b>Absolutist words</b> (always, never, everyone), a validated marker of black-and-white thinking (Al-Mosaiwi &amp; Johnstone, 2018). <b>Evidence words</b>. <b>Heat</b>, a 0&ndash;1 hostility heuristic from insults, slurs, put-downs and shouting, damped by message length. <b>Tone</b> from the open VADER lexicon (Hutto &amp; Gilbert, 2014). <b>Moral vocabulary</b> after Moral Foundations Theory (Graham, Haidt &amp; Nosek, 2009). <b>Rhythm</b>: who starts conversations, median reply times, after-hours messaging. Every number opens to show its working.</p>
-      </details>
-      <details>
-        <summary>What is the Rigor lens?</summary>
-        <p>A score out of 100 for <em>how well each person argued</em> &mdash; sourcing, answering the other's questions, staying on topic, conduct, hedging, and owning a mistake. It says nothing about who is right, and it cannot: no party, leader or policy appears anywhere in the word lists, and the repo ships two mirror-image sample arguments whose scores must swap when the sides swap, or the build fails.</p>
+        <summary>What is the scoring actually doing?</summary>
+        <p>Counting, carefully, and telling you so. Word lists, phrase patterns and a few small formulas &mdash; no black box and no model deciding what you meant. The full method, every weight and every threshold is written up in <a href="https://github.com/kaustav1311/threadlens/blob/main/docs/SCORING.md" rel="noopener">docs/SCORING.md</a>, and the word lists are a single readable JSON file you can send a pull request against.</p>
       </details>
       <details>
         <summary>Can it tell me if my relationship is in trouble?</summary>
-        <p>No, and be suspicious of anything that says it can. It can show you that one of you starts 80% of the conversations, or that the warmth dropped off in March, or that neither of you has asked the other a question in six weeks. Those are worth talking about. They are not a diagnosis, and a chat is a thin slice of a relationship.</p>
+        <p>No, and be suspicious of anything that says it can. It can show you that one of you starts 80% of the conversations, or that the warmth fell off a cliff in March, or that neither of you has asked the other a question in six weeks. Those are worth a conversation. They are not a diagnosis, and a chat log is a thin slice of a relationship.</p>
       </details>
       <details>
         <summary>What will it get wrong?</summary>
-        <p>Sarcasm, always. Quoting someone else's insult counts against you. Romanised Hindi and other mixed languages are only partly covered, so tone and heat undercount them. Comparisons switch off below 150 words per person, because short chats say nothing. Read the messages, not just the bars.</p>
+        <p>Sarcasm, every time. Quoting someone else's insult counts against you. Romanised Hindi and other mixed languages are only partly covered, so tone and heat undercount them. Comparisons switch off below 150 words per person, because short chats say nothing. Read the messages, not just the bars.</p>
       </details>
       <details>
         <summary>Is there a command-line version?</summary>
-        <p>Yes. The repo has a Python CLI and an optional self-hosted API, both offline, plus local ML models (Detoxify, fallacy classifiers, self-contradiction detection) behind <span class="mono">pip install 'threadlens[deep]'</span>. <span class="mono">threadlens analyse chat.zip --lens rigor --ledger claims.json</span> exports the claim ledger for you (or an LLM) to fact-check.</p>
+        <p>Yes, and an optional self-hosted API, both offline. <span class="mono">pip install threadlens</span>, then <span class="mono">threadlens analyse chat.zip --lens rigor --ledger claims.json</span> exports the claim ledger for you &mdash; or an LLM &mdash; to fact-check. Local ML models (toxicity, fallacy classification, self-contradiction detection) live behind the <span class="mono">[deep]</span> extra.</p>
       </details>
     </div>
   </section>
 
   <section class="wrap section" id="privacy" aria-labelledby="privacy-h">
     <h2 id="privacy-h">Where your chat goes</h2>
-    <p class="lede-sm">Nowhere. That is the whole design.</p>
+    <p class="lede-sm">Nowhere. That is the whole design, and it is enforced rather than promised.</p>
     <div class="faq">
       <details open>
         <summary>How can I be sure?</summary>
-        <p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser physically refuses to let it send your chat anywhere, even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off &mdash; it works exactly the same. There is no server, no account, no cookie and no analytics.</p>
+        <p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser refuses to let it open a network connection at all &mdash; even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off; it behaves identically. There is no server, no account, no cookie and no analytics, and a test in the repo fails the build if anyone adds one.</p>
       </details>
       <details>
         <summary>Should I be analysing someone else's messages?</summary>
-        <p>A chat you are in is also theirs. Use &ldquo;Hide names&rdquo; before you screenshot anything, keep reports to yourself, and do not publish another person's messages because a chart made them look bad.</p>
+        <p>A chat you are in is also theirs. Use &ldquo;Hide names&rdquo; before you screenshot anything, keep reports to yourself, and do not publish another person's messages because a chart made them look bad. Depending on where you live, publishing them may also be their decision to make, not yours.</p>
       </details>
       <details>
         <summary>Any limits?</summary>
-        <p>25&nbsp;MB, 250,000 messages, and 8 analyses per 10 minutes so a huge export cannot lock up your own browser. No server means nothing else needs limiting.</p>
+        <p>25&nbsp;MB, 250,000 messages, and 8 analyses per 10 minutes &mdash; the last one purely so a huge export cannot lock up your own browser. No server means nothing else needs limiting.</p>
       </details>
     </div>
   </section>
 </main>
 
 <footer class="wrap">
-  <span>Threadlens &middot; MIT &middot; A mirror, not a verdict.</span>
-  <span><a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source</a> &middot; <a href="#privacy">Privacy</a></span>
+  <div class="foot-grid">
+    <div>
+      <h4>Threadlens</h4>
+      <p class="foot-note" style="border:0;padding:0">An open-source instrument for looking at an argument honestly. It counts, it shows its working, and it refuses to pick a side.</p>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source code</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/blob/main/docs/SCORING.md" rel="noopener">Scoring model</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/releases" rel="noopener">Releases</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Author &amp; policy</h4>
+      <ul>
+        <li><a href="https://github.com/kaustav1311" rel="noopener">github.com/kaustav1311</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/blob/main/PRIVACY.md" rel="noopener">Privacy</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/blob/main/SECURITY.md" rel="noopener">Security</a></li>
+        <li><a href="https://github.com/kaustav1311/threadlens/blob/main/LICENSE" rel="noopener">MIT licence</a></li>
+      </ul>
+    </div>
+  </div>
+  <p class="foot-note">
+    &copy; 2026 Kaustav Mallick. Code is MIT-licensed; the name and wording are the author's.
+    Threadlens is not a diagnostic, forensic or legal instrument, and its output is not evidence of anything
+    except word frequencies. Provided as-is, with no warranty. You are responsible for having the right to
+    analyse any conversation you put into it.
+  </p>
 </footer>

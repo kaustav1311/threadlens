@@ -11,13 +11,29 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const r = p => readFileSync(join(root, p), 'utf8');
 const safe = s => s.replace(/<\/(script)/gi, '<\\/$1');
 
-const css = r('web/src/style.css');
+// The stylesheet is heavily commented on purpose -- the reasoning behind a token
+// belongs next to it. The browser does not need any of that, so it is stripped
+// from the inlined copy only. CSS has no comment-like syntax inside its values,
+// so a plain block-comment strip is safe here in a way it would not be in JS.
+const css = r('web/src/style.css')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^[ \t]*\n/gm, '')
+  .trim();
 const body = r('web/src/body.html');
 const coreSrc = r('web/src/core.js');
 
 // TL_CORE_SRC is the same core.js again, as a string, so the page can build a
 // Web Worker from a Blob without fetching anything. That is the only reason the
 // CSP allows worker-src blob:, and it is why connect-src can stay 'none'.
+// The worker never reads comments, so they are stripped from that copy only -- the
+// executable copy in the page keeps every one of them. Whole-line comments only:
+// anything cleverer would eat the `https?:\/\/` inside core.js's own regexes.
+const stripComments = s => s
+  .replace(/^[ 	]*\/\*[\s\S]*?\*\/[ 	]*$/gm, '')
+  .replace(/^[ 	]*\/\/.*$/gm, '')
+  .replace(/\n{2,}/g, '\n')
+  .trim();
+
 // The JSON in lexicons/ is kept pretty-printed so diffs are reviewable; inline it minified.
 const json = p => JSON.stringify(JSON.parse(r(p)));
 
@@ -27,7 +43,7 @@ const scripts = env => [
   + `window.TL_LEX=${safe(json('lexicons/lexicons.json'))};`
   + `window.TL_VADER=${safe(json('lexicons/vader.json'))};`
   + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`
-  + `window.TL_CORE_SRC=${safe(JSON.stringify(coreSrc))};`,
+  + `window.TL_CORE_SRC=${safe(JSON.stringify(stripComments(coreSrc)))};`,
   coreSrc,
   r('web/src/app.js'),
 ].map(safe);

@@ -12,6 +12,7 @@
   const WORKER_MIN_CHARS = 400000;  // below this the main thread finishes before a worker could start
   const COUNT_UP_MS = 600;
   const TOP_DIFFS = 5;
+  const POP_MS = 9000;
   const runs = [];
 
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -33,6 +34,7 @@
   const sv = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
   const color = i => `var(--s${(i % 8) + 1})`;
   const initial = n => (n.trim()[0] || '?').toUpperCase();
+  const dateTime = d => new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   const state = { raw: null, source: '', isSample: false, lens: 'debate', res: null, busy: false };
 
@@ -45,7 +47,7 @@
     while (runs.length && now - runs[0] > RATE.windowMs) runs.shift();
     if (runs.length >= RATE.max) {
       const wait = Math.ceil((RATE.windowMs - (now - runs[0])) / 1000);
-      throw new Error(`That's ${RATE.max} analyses in 10 minutes. Give it ${wait} s. The limit is here to keep your own browser responsive on big exports, not to ration anything.`);
+      throw new Error(`That's ${RATE.max} analyses in 10 minutes. Give it ${wait} s. The limit exists so a huge export cannot lock up your own browser, not to ration anything.`);
     }
     runs.push(now);
   }
@@ -67,6 +69,17 @@
       el('span', { class: 'dot' }), el('span', null, name),
       el('span', { class: 'size' }, bytes == null ? '' : (bytes / 1024 < 900 ? Math.round(bytes / 1024) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB')));
     $('#progress').before(card);
+  }
+
+  /** A short, plain-spoken pop-up. Dismissible, auto-expiring, never more than two deep. */
+  function pop(kind, text) {
+    const box = $('#toastbox');
+    if (!box) return;
+    while (box.childElementCount >= 2) box.firstElementChild.remove();
+    const node = el('div', { class: 'pop', role: 'status' }, el('b', null, kind), el('p', null, text));
+    node.addEventListener('click', () => node.remove());
+    box.append(node);
+    setTimeout(() => node.remove(), POP_MS);
   }
 
   async function readFile(file) {
@@ -172,6 +185,7 @@
     showError('');
     state.busy = true;
     $('#results').setAttribute('aria-busy', 'true');
+    const wasSample = state.isSample;
     try {
       if (!isSample) rateCheck();
       const text = await getText();
@@ -187,7 +201,12 @@
       state.res = res;
       setProgress(null);
       render();
-      if (!isSample) $('#lensbar').scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+      if (!isSample) {
+        $('#lensbar').scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+        // The handover from sample to real data is the moment the old build hid completely.
+        if (wasSample) pop('Now reading your chat', 'The sample is gone. Everything below is your conversation, scored in this tab.');
+        announce(res);
+      }
     } catch (e) {
       setProgress(null);
       showError(e.message || String(e));
@@ -195,6 +214,25 @@
       state.busy = false;
       $('#results').setAttribute('aria-busy', 'false');
     }
+  }
+
+  /** One pop-up, and only when there is genuinely one thing worth saying out loud. */
+  function announce(res) {
+    const S = res.stats.filter(s => s.name !== 'Others').slice(0, 2);
+    if (S.length < 2) return;
+    const [a, b] = S;
+    const tot = a.initiations + b.initiations;
+    if (tot >= 6) {
+      const hi = a.initiations >= b.initiations ? a : b;
+      const share = hi.initiations / tot;
+      if (share >= 0.75) return pop('Worth noticing', `${hi.name} starts ${Math.round(share * 100)}% of the conversations here. That is rarely an accident.`);
+    }
+    for (const s of S) {
+      if (s.heatLast > 0.12 && s.heatLast >= 2 * Math.max(s.heatFirst, 0.03))
+        return pop('Temperature check', `${s.name}'s messages got measurably hotter as this went on. The Debate lens has the curve.`);
+    }
+    const q = S.find(s => s.questionRate < 0.03 && s.textMessages >= 20);
+    if (q) return pop('Worth noticing', `${q.name} asked something in under 3% of their messages. A lot of telling, not much asking.`);
   }
 
   function rerun() {
@@ -205,19 +243,22 @@
   /* --------------------------------------------------------------- render */
 
   function movePill() {
-    const active = $('.seg button[aria-pressed="true"]'), pill = $('#pill'), seg = $('#seg');
+    const active = $('.seg button[aria-pressed="true"]'), pill = $('#pill');
     if (!active || !pill) return;
     pill.style.width = active.offsetWidth + 'px';
-    pill.style.transform = `translateX(${active.offsetLeft - seg.clientLeft - 3}px)`;
+    pill.style.transform = `translateX(${active.offsetLeft}px)`;
   }
 
-  /** Count a number up on first paint. Short, once, and skipped entirely for reduced motion. */
+  /** Count a number up on first paint. Short, once, skipped entirely for reduced motion. */
   function countUp(node, to, fmt) {
-    if (reduceMotion() || !isFinite(to)) { node.textContent = fmt(to); return; }
+    const final = fmt(to);
+    // Reserve the final width, or the label underneath jitters while the digits change.
+    node.style.minWidth = final.length + 'ch';
+    if (reduceMotion() || !isFinite(to)) { node.textContent = final; return; }
     const t0 = performance.now();
     const step = now => {
       const k = Math.min(1, (now - t0) / COUNT_UP_MS);
-      node.textContent = fmt(to * (1 - Math.pow(1 - k, 3)));
+      node.textContent = k >= 1 ? final : fmt(to * (1 - Math.pow(1 - k, 3)));
       if (k < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
@@ -227,40 +268,52 @@
     const { res, lens } = state;
     const R = $('#results');
     R.replaceChildren();
-    // keep `wrap` -- it carries the page gutter and max width; overwriting className loses it
+    // keep `wrap` -- it carries the page gutter and max width
     R.className = 'wrap results swap' + (lens === 'rigor' ? ' lens-rigor' : '');
-    // the sliding pill lives in the lens bar, outside #results, so it needs the class too
-    $('#lensbar').classList.toggle('lens-rigor', lens === 'rigor');
-    // restart the cross-fade
     void R.offsetWidth;
     $('#lens-blurb').textContent = core.LENSES[lens].blurb;
     document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lens === lens)));
+    $('#lensbar').classList.toggle('lens-rigor', lens === 'rigor');
     movePill();
     if (!res) return;
 
     const idx = Object.fromEntries(res.people.map((p, i) => [p, i]));
     const days = res.range.days;
 
-    R.append(
-      el('div', { class: 'banner' },
-        el('div', null,
-          el('p', { class: 'eyebrow' },
-            core.LENSES[lens].title + ' lens',
-            core.LENSES[lens].badge ? ' ' : null,
-            core.LENSES[lens].badge ? el('span', { class: 'badge' }, core.LENSES[lens].badge) : null),
-          el('h2', null, state.isSample ? 'Sample: an argument about a car-free market' : state.source || 'Your conversation')),
-        state.isSample ? el('span', { class: 'sample-note' }, 'Sample data — drop your own above') : null),
+    /* Sample or yours: said once, plainly, above every number. */
+    R.append(state.isSample
+      ? el('div', { class: 'demo-strip' },
+        el('b', null, 'Sample data'),
+        el('span', null, 'Not your numbers. A made-up argument about a car-free market, so you can see what the tool does before feeding it anything real.'),
+        el('button', {
+          class: 'btn', type: 'button',
+          onclick: () => { $('#zone').scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'center' }); $('#pick').focus(); },
+        }, 'Analyse your own'))
+      : el('div', { class: 'live-strip' },
+        el('b', null, 'Your chat'),
+        el('span', null, `Read inside this tab and never uploaded. ${res.totals.messages.toLocaleString()} messages scored locally.`)));
+
+    R.append(el('p', { class: 'statusline' },
+      `> threadlens --lens ${lens} --source ${state.isSample ? 'sample' : 'local'} --messages ${res.totals.messages}`,
+      el('span', { class: 'caret', 'aria-hidden': 'true' })));
+
+    R.append(el('div', { class: 'banner' },
+      el('div', { class: 'hrow' },
+        el('h2', null, state.isSample ? 'A disagreement about a car-free market' : state.source || 'Your conversation'),
+        el('span', { class: 'tag ' + (lens === 'rigor' ? 'rigor' : 'compare') }, core.LENSES[lens].badge || core.LENSES[lens].title + ' lens')),
       el('div', { class: 'facts' },
         el('span', null, `${res.totals.messages.toLocaleString()} messages`),
         el('span', null, `${res.totals.words.toLocaleString()} words`),
         el('span', null, `${res.people.length} ${res.people.length === 1 ? 'person' : 'people'}`),
-        el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)} · ${days} active day${days === 1 ? '' : 's'}`),
-        el('span', null, `dates read as ${res.dateOrder}`)));
+        el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)}`),
+        el('span', null, `${days} active day${days === 1 ? '' : 's'}`),
+        el('span', null, `dates ${res.dateOrder}`))));
 
     R.append(lens === 'rigor' ? rigorCards(res, idx) : scoreCards(res, idx, lens));
     R.append(findingCards(res, lens));
 
     if (lens === 'rigor') {
+      R.append(rigorKnowhow(res));
       R.append(claimLedger(res, idx));
       const g = el('div', { class: 'grid2' });
       g.append(unansweredPanel(res, idx), driftPanel(res, idx));
@@ -291,7 +344,7 @@
     const toast = el('span', { class: 'toast', 'aria-live': 'polite' });
     const md = () => core.toMarkdown(res, lens);
     const exp = el('div', { class: 'export' },
-      el('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(md()); toast.textContent = 'Copied'; } catch { toast.textContent = 'The browser blocked the clipboard. Download the report instead.'; } } }, 'Copy report'));
+      el('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(md()); toast.textContent = 'Copied'; } catch { toast.textContent = 'The browser blocked the clipboard. Download it instead.'; } } }, 'Copy report'));
     if (ENV !== 'artifact') {
       exp.append(
         el('button', { class: 'btn', type: 'button', onclick: () => download(`threadlens-${lens}.md`, md(), 'text/markdown') }, 'Download .md'),
@@ -305,7 +358,10 @@
     state.raw = null; state.res = null; state.isSample = false;
     $('#paste').value = ''; $('#file').value = '';
     const fc = $('#filecard'); if (fc) fc.remove();
-    $('#results').replaceChildren(el('p', { class: 'muted' }, 'Gone. It only ever lived in this tab’s memory. Drop another export above.'));
+    $('#results').replaceChildren(el('div', { class: 'knowhow' },
+      el('h4', null, 'Cleared'),
+      el('p', null, 'Gone. It only ever lived in this tab’s memory, and now it does not. Drop another export above, or load the sample again.')));
+    pop('Cleared', 'That chat is out of memory. Nothing was ever written anywhere else.');
   }
 
   function download(name, text, type) {
@@ -316,14 +372,14 @@
   /* ------------------------------------------------------------ scorecards */
 
   function sparkline(values, stroke) {
-    const W = 200, H = 26;
+    const W = 200, H = 30;
     const s = sv('svg', { class: 'spark', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' });
     const max = Math.max(...values, 1);
     const x = i => (values.length === 1 ? W / 2 : (i * W) / (values.length - 1));
     const y = v => H - 2 - (v / max) * (H - 4);
     let d = '';
     values.forEach((v, i) => { d += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); });
-    const path = sv('path', { class: 'line', d, fill: 'none', stroke, 'stroke-width': 1.8, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+    const path = sv('path', { class: 'line', d, fill: 'none', stroke, 'stroke-width': 2 });
     path.style.setProperty('--len', Math.max(W, values.length * 6));
     s.append(path);
     return s;
@@ -335,31 +391,37 @@
     return el('div', { class: 'stat' }, b, el('span', null, label));
   }
 
+  function personHead(name, sub) {
+    return el('div', { class: 'who' },
+      el('span', { class: 'av', 'aria-hidden': 'true' }, initial(name)),
+      el('div', null, el('div', { class: 'nm' }, name), el('div', { class: 'sub' }, sub)));
+  }
+
   function scoreCards(res, idx, lens) {
     const wrap = el('div', { class: 'cards' });
     for (const s of res.stats) {
       const c = color(idx[s.name]);
       const daily = res.series.map(d => (d.per[s.name] ? d.per[s.name].n : 0));
-      const card = el('div', { class: 'card', style: `--who:${c}` },
-        el('div', { class: 'who' },
-          el('span', { class: 'av', 'aria-hidden': 'true' }, initial(s.name)),
-          el('div', null, el('div', { class: 'nm' }, s.name), el('div', { class: 'sub' }, `${s.messages.toLocaleString()} messages · ${s.words.toLocaleString()} words`))),
-        el('div', { class: 'stats' },
-          statBlock(s.share * 100, 'share of messages', v => Math.round(v) + '%'),
-          statBlock(s.questionRate * 100, 'messages that ask', v => Math.round(v) + '%'),
-          lens === 'work' || lens === 'personal'
-            ? statBlock(s.replyMedianMin == null ? NaN : s.replyMedianMin, 'median reply', v => core.fmtMins(v))
-            : statBlock(s.heatMean, 'mean heat', v => v.toFixed(2)),
-          statBlock(s.initiations, 'conversations started', v => String(Math.round(v)))),
-        sparkline(daily, c));
-      wrap.append(card);
+      wrap.append(el('div', { class: 'card', style: `--who:${c}` },
+        personHead(s.name, `${s.messages.toLocaleString()} messages · ${s.words.toLocaleString()} words`),
+        el('div', { class: 'body' },
+          el('div', { class: 'stats' },
+            statBlock(s.share * 100, 'share of messages', v => Math.round(v) + '%'),
+            statBlock(s.questionRate * 100, 'messages that ask', v => Math.round(v) + '%'),
+            lens === 'work' || lens === 'personal'
+              ? statBlock(s.replyMedianMin == null ? NaN : s.replyMedianMin, 'median reply', v => core.fmtMins(v))
+              : statBlock(s.heatMean, 'mean heat', v => v.toFixed(2)),
+            statBlock(s.initiations, 'conversations started', v => String(Math.round(v)))),
+          el('span', { class: 'sr' }, `${s.name} sent ${s.messages} messages over ${res.range.days} active days.`),
+          sparkline(daily, c))));
     }
     return wrap;
   }
 
   /** A "how was this computed" note that opens in place. */
   function why(text) {
-    const note = el('p', { class: 'sub', hidden: true, style: 'grid-column:1/-1;margin:2px 0 4px' }, text);
+    const note = el('p', { class: 'note', hidden: true });
+    note.textContent = text;
     const btn = el('button', {
       class: 'why', type: 'button', 'aria-expanded': 'false',
       'aria-label': 'How this was computed',
@@ -374,16 +436,19 @@
     for (const name of res.people) {
       const p = G.people[name];
       if (!p) continue;
-      const c = color(idx[name]);
-      const card = el('div', { class: 'card', style: `--who:${c}` },
-        el('div', { class: 'who' },
-          el('span', { class: 'av', 'aria-hidden': 'true' }, initial(name)),
-          el('div', null, el('div', { class: 'nm' }, name),
-            el('div', { class: 'sub' }, `${p.claims} claim${p.claims === 1 ? '' : 's'} · ${p.checkableClaims} checkable · ${p.questionsAnswered}/${p.questionsPutToThem} questions answered`))));
+      const body = el('div', { class: 'body' });
 
       const scoreEl = el('b', null, '');
       countUp(scoreEl, p.score == null ? NaN : p.score, v => (isFinite(v) ? String(Math.round(v)) : '—'));
-      card.append(el('div', { class: 'score' }, scoreEl, el('span', null, '/ 100 rigor')));
+      body.append(el('div', { class: 'score' }, scoreEl, el('span', null, '/ 100')));
+
+      // Strongest and weakest component, stated as fact rather than as a judgement.
+      const named = Object.keys(core.RIGOR_WEIGHTS).filter(k => p.components[k] != null);
+      if (named.length) {
+        const best = named.reduce((x, k) => (p.components[k] > p.components[x] ? k : x), named[0]);
+        const worst = named.reduce((x, k) => (p.components[k] < p.components[x] ? k : x), named[0]);
+        body.append(el('div', { class: 'verdict' }, `strongest ${core.RIGOR_LABELS[best]} · weakest ${core.RIGOR_LABELS[worst]}`));
+      }
 
       const bd = el('div', { class: 'breakdown' });
       for (const k of Object.keys(core.RIGOR_WEIGHTS)) {
@@ -398,11 +463,24 @@
           el('span', { class: 'v' }, v == null ? 'n/a' : v.toFixed(2)),
           track, note));
       }
-      card.append(bd);
-      wrap.append(card);
+      body.append(bd);
+
+      wrap.append(el('div', { class: 'card', style: `--who:${color(idx[name])}` },
+        personHead(name, `${p.claims} claim${p.claims === 1 ? '' : 's'} · ${p.checkableClaims} checkable · ${p.questionsAnswered}/${p.questionsPutToThem} answered`),
+        body));
     }
-    const note = el('p', { class: 'sub' }, `Opening topic read as: ${G.topicTerms.slice(0, 8).join(', ')}. Components marked n/a did not apply and are left out of the average, rather than scored zero.`);
-    return el('div', { style: 'display:grid;gap:12px' }, wrap, note);
+    return wrap;
+  }
+
+  function rigorKnowhow(res) {
+    const G = res.rigor;
+    return el('div', { class: 'knowhow' },
+      el('h4', null, 'How to read this'),
+      el('ul', null,
+        el('li', null, 'The score is about conduct, not correctness. A well-argued case for something wrong still scores well, and that is deliberate.'),
+        el('li', null, `The opening topic was read as: ${G.topicTerms.slice(0, 8).join(', ')}. Drift is measured against that, so a chat that legitimately moves on will show drift.`),
+        el('li', null, 'Components marked n/a did not apply — nobody asked that person a question, say — so they drop out of the average rather than scoring zero.'),
+        el('li', null, 'Nothing here checks whether a claim is true. The ledger tells you what to go and check.')));
   }
 
   /* -------------------------------------------------------------- findings */
@@ -413,7 +491,7 @@
     for (const f of F) {
       const short = f.short || (f.text.length > 78 ? f.text.slice(0, 74).replace(/\s\S*$/, '') + '…' : f.text);
       const li = el('li', null,
-        el('span', { class: 'pill ' + f.kind }, f.kind),
+        el('span', { class: 'tag ' + f.kind }, f.kind),
         el('p', { class: 'hd' }, short));
       if (short !== f.text) li.append(el('details', null, el('summary', null, 'why?'), el('p', null, f.text)));
       ul.append(li);
@@ -432,7 +510,9 @@
     return (hi - lo) / hi;
   }
 
-  function measureRows(res, keys, idx) {
+  function measuresTable(res, keys, idx) {
+    const t = el('table');
+    t.append(el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Measure'), res.stats.map(s => el('th', { scope: 'col', class: 'num' }, s.name)))));
     const tb = el('tbody');
     for (const k of keys) {
       const M = core.METRICS[k];
@@ -446,13 +526,7 @@
           return el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, core.fmt(s[k], M.fmt)), fill));
         })));
     }
-    return tb;
-  }
-
-  function measuresTable(res, keys, idx) {
-    const t = el('table');
-    t.append(el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Measure'), res.stats.map(s => el('th', { scope: 'col' }, s.name)))));
-    t.append(measureRows(res, keys, idx));
+    t.append(tb);
     return el('div', { class: 'scroll' }, t);
   }
 
@@ -477,10 +551,6 @@
   function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const k of [1, 2, 2.5, 5, 10]) if (k * p >= v) return k * p; return 10 * p; }
   function shortDay(d) { const [y, mo, da] = d.split('-').map(Number); return new Date(y, mo - 1, da).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
 
-  /**
-   * One line chart plus the same numbers as a table, because a chart nobody can
-   * read with a screen reader is half a chart.
-   */
   function lineChart(title, sub, xs, series, idx, fmtV, labelX) {
     const wrap = el('div', { class: 'chart' });
     const legend = el('div', { class: 'legend' }, series.map(s => el('span', null, el('i', { class: 'sw', style: `background:${color(idx[s.name])}` }), s.name)));
@@ -516,10 +586,11 @@
         d += (pen ? 'L' : 'M') + cx.toFixed(1) + ' ' + cy.toFixed(1);
         pen = true; px = cx; py = cy;
       });
-      const path = sv('path', { class: 'line', d, fill: 'none', stroke: c, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+      const path = sv('path', { class: 'line', d, fill: 'none', stroke: c, 'stroke-width': 2, 'stroke-linejoin': 'miter', 'stroke-linecap': 'butt' });
       path.style.setProperty('--len', Math.ceil(len) || 1);
       svg.append(path);
-      if (xs.length <= 45) s.pts.forEach((v, i) => { if (v != null) svg.append(sv('circle', { cx: x(i), cy: y(v), r: 3.5, fill: c, stroke: 'var(--surface)', 'stroke-width': 1.5 })); });
+      // Square markers, to match the rest of the page.
+      if (xs.length <= 45) s.pts.forEach((v, i) => { if (v != null) svg.append(sv('rect', { x: x(i) - 3, y: y(v) - 3, width: 6, height: 6, fill: c })); });
     }
     const cross = sv('line', { y1: m.t, y2: H - m.b, stroke: 'var(--line-strong)', 'stroke-width': 1, visibility: 'hidden' });
     svg.append(cross);
@@ -540,8 +611,8 @@
     hit.addEventListener('pointerleave', () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); });
 
     const tbl = el('table', null,
-      el('thead', null, el('tr', null, el('th', null, 'Point'), series.map(s => el('th', null, s.name)))),
-      el('tbody', null, xs.map((d, i) => el('tr', null, el('td', null, labelX(d)), series.map(s => el('td', null, s.pts[i] == null ? '—' : fmtV(s.pts[i])))))));
+      el('thead', null, el('tr', null, el('th', null, 'Point'), series.map(s => el('th', { class: 'num' }, s.name)))),
+      el('tbody', null, xs.map((d, i) => el('tr', null, el('td', null, labelX(d)), series.map(s => el('td', { class: 'num' }, s.pts[i] == null ? '—' : fmtV(s.pts[i])))))));
     panel.append(el('details', null, el('summary', null, 'Show as table'), el('div', { class: 'scroll' }, tbl)));
     return panel;
   }
@@ -574,25 +645,31 @@
 
   /* ----------------------------------------------------------- rigor panels */
 
+  function quoteMeta(idx, who, ...rest) {
+    return el('span', { class: 'meta' },
+      el('i', { class: 'sw', style: `background:${color(idx[who])}` }),
+      el('b', null, who),
+      rest.filter(Boolean).map(x => el('span', null, x)));
+  }
+
   function claimLedger(res, idx) {
     const G = res.rigor;
     const SHOWN = 12;
     const row = c => el('tr', null,
-      el('td', null, el('span', { class: 'sw', style: `background:${color(idx[c.who])};display:inline-block;margin-right:6px` }), c.who),
+      el('td', null, el('i', { class: 'sw', style: `background:${color(idx[c.who])};display:inline-block;margin-right:6px` }), c.who),
       el('td', { class: 'muted' }, core.fmtDate(c.date)),
       el('td', { class: 'claimtext' }, c.text),
       el('td', null, el('span', { class: 'tag ' + c.status }, c.status)),
-      el('td', null, c.challenged ? 'yes' : '—'),
-      el('td', null, c.answered ? 'yes' : c.challenged ? 'no' : '—'));
+      el('td', { class: 'num' }, c.challenged ? 'yes' : '—'),
+      el('td', { class: 'num' }, c.answered ? 'yes' : c.challenged ? 'no' : '—'));
     const head = () => el('thead', null, el('tr', null,
       el('th', null, 'Who'), el('th', null, 'When'), el('th', null, 'Claim'),
-      el('th', null, 'Status'), el('th', null, 'Challenged'), el('th', null, 'Backed up')));
-    const first = el('table', null, head(), el('tbody', null, G.ledger.slice(0, SHOWN).map(row)));
+      el('th', null, 'Status'), el('th', { class: 'num' }, 'Challenged'), el('th', { class: 'num' }, 'Backed up')));
     const total = G.ledgerTotal != null ? G.ledgerTotal : G.ledger.length;
     const panel = el('div', { class: 'panel' },
       el('h3', null, 'Claim ledger'),
       el('p', { class: 'sub' }, `Every factual-sounding sentence, and whether it pointed at anything checkable. Threadlens never marks a claim true or false — that part is still your job. ${total.toLocaleString()} found${total > G.ledger.length ? `, showing the first ${G.ledger.length}` : ''}.`),
-      el('div', { class: 'scroll' }, first));
+      el('div', { class: 'scroll' }, el('table', null, head(), el('tbody', null, G.ledger.slice(0, SHOWN).map(row)))));
     if (G.ledger.length > SHOWN) {
       panel.append(el('details', null,
         el('summary', null, `Show all ${G.ledger.length.toLocaleString()}`),
@@ -609,9 +686,7 @@
       el('p', { class: 'sub' }, `Direct questions that got no engaging reply within the next 6 messages. ${total.toLocaleString()} of them.`));
     if (!G.unanswered.length) { panel.append(el('p', { class: 'muted' }, 'Every question got a reply. That is genuinely rare.')); return panel; }
     panel.append(el('div', { class: 'quotes' }, G.unanswered.slice(0, 8).map(q =>
-      el('div', { class: 'quote', style: `border-left-color:${color(idx[q.who])}` },
-        el('span', { class: 'meta' }, `${q.who} · ${core.fmtDate(q.date)}`),
-        el('p', null, q.text)))));
+      el('div', { class: 'quote' }, quoteMeta(idx, q.who, core.fmtDate(q.date)), el('p', null, q.text)))));
     return panel;
   }
 
@@ -619,7 +694,7 @@
 
   function moralPanel(res, idx) {
     const t = el('table', null,
-      el('thead', null, el('tr', null, el('th', null, 'Foundation'), res.stats.map(s => el('th', null, s.name)))),
+      el('thead', null, el('tr', null, el('th', null, 'Foundation'), res.stats.map(s => el('th', { class: 'num' }, s.name)))),
       el('tbody', null, Object.keys(core.MORAL_LABELS).map(k => {
         const vals = res.stats.map(s => s.moral[k] || 0); const max = Math.max(...vals, 1e-9);
         return el('tr', null, el('th', { scope: 'row' }, core.MORAL_LABELS[k]),
@@ -634,13 +709,13 @@
 
   function rhetoricPanel(res, idx) {
     const t = el('table', null,
-      el('thead', null, el('tr', null, el('th', null, 'Cue'), res.stats.map(s => el('th', null, s.name)))),
-      el('tbody', null, Object.keys(core.RHET_LABELS).map(k => el('tr', null, el('th', { scope: 'row' }, core.RHET_LABELS[k]), res.stats.map(s => el('td', null, String(s.rhetoric[k] || 0)))))));
+      el('thead', null, el('tr', null, el('th', null, 'Cue'), res.stats.map(s => el('th', { class: 'num' }, s.name)))),
+      el('tbody', null, Object.keys(core.RHET_LABELS).map(k => el('tr', null, el('th', { scope: 'row' }, core.RHET_LABELS[k]), res.stats.map(s => el('td', { class: 'num' }, String(s.rhetoric[k] || 0)))))));
     const panel = el('div', { class: 'panel' }, el('h3', null, 'Rhetorical cues'), el('p', { class: 'sub' }, 'Phrase matches, not verdicts. Open the examples and judge them in context.'), el('div', { class: 'scroll' }, t));
     if ($('#showq').checked) {
       const ex = el('div', { class: 'quotes' });
       for (const s of res.stats) for (const k in s.examples) for (const q of s.examples[k].slice(0, 2))
-        ex.append(el('div', { class: 'quote', style: `border-left-color:${color(idx[s.name])}` }, el('span', { class: 'meta' }, `${s.name} · ${core.RHET_LABELS[k]} · ${new Date(q.date).toLocaleString()}`), el('p', null, q.text)));
+        ex.append(el('div', { class: 'quote' }, quoteMeta(idx, s.name, core.RHET_LABELS[k], dateTime(q.date)), el('p', null, q.text)));
       if (ex.childElementCount) panel.append(el('details', null, el('summary', null, 'Show matched messages'), ex));
     }
     return panel;
@@ -648,8 +723,8 @@
 
   function hottestPanel(res, idx) {
     return el('div', { class: 'panel' }, el('h3', null, 'Hottest messages'), el('p', { class: 'sub' }, 'Highest heat scores. Check whether the words were meant, quoted or joking.'),
-      el('div', { class: 'quotes' }, res.hottest.map(h => el('div', { class: 'quote', style: `border-left-color:${color(idx[h.who])}` },
-        el('span', { class: 'meta' }, `${h.who} · ${new Date(h.date).toLocaleString()} · heat ${h.heat.toFixed(2)}`), el('p', null, h.text)))));
+      el('div', { class: 'quotes' }, res.hottest.map(h => el('div', { class: 'quote' },
+        quoteMeta(idx, h.who, dateTime(h.date), 'heat ' + h.heat.toFixed(2)), el('p', null, h.text)))));
   }
 
   /* --------------------------------------------------------------- wiring */
@@ -685,6 +760,6 @@
   const fromHash = location.hash.slice(1);
   if (core.LENSES[fromHash]) state.lens = fromHash;
 
-  // Open in a working state: the synthetic sample, clearly labelled.
+  // Open in a working state: the synthetic sample, clearly labelled as such.
   ingest(async () => SAMPLE, 'Sample', true);
 })();

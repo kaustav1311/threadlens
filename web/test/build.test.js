@@ -70,8 +70,14 @@ test('the count-up animation is skipped when motion is reduced', () => {
   const fn = app.slice(app.indexOf('function countUp'));
   const body = fn.slice(0, fn.indexOf('\n  }') + 4);
   assert.ok(/reduceMotion\(\)/.test(body), 'countUp must consult reduceMotion()');
-  assert.ok(/reduceMotion\(\)[\s\S]{0,140}?node\.textContent = fmt\(to\);[\s\S]{0,40}?return;/.test(body),
-    'countUp must set the final value and bail out before animating');
+  // It must write the finished value and return before reaching requestAnimationFrame.
+  const guard = body.indexOf('reduceMotion()');
+  const raf = body.indexOf('requestAnimationFrame');
+  assert.ok(guard > -1 && raf > guard, 'the reduced-motion guard must come before any animation');
+  assert.ok(/reduceMotion\(\)[\s\S]{0,120}?return;/.test(body),
+    'countUp must bail out of the guard, not fall through into the animation');
+  assert.ok(/node\.style\.minWidth/.test(body),
+    'countUp must reserve the final width so the label below it does not jitter');
 });
 
 /* ------------------------------------------------------------ page budget */
@@ -87,4 +93,26 @@ test('the page declares the Rigor lens and the relationship keywords it should b
   for (const kw of ['relationship', 'group chat', 'whatsapp chat analysis'])
     assert.ok(html.toLowerCase().includes(kw), `missing keyword: ${kw}`);
   assert.match(html, /data-lens="rigor"/);
+});
+
+/* ------------------------------------------ the worker copy of core.js */
+
+test('the embedded worker source is valid JS and still exports the core', () => {
+  // build.mjs strips comments from TL_CORE_SRC to fit the page budget. A bad
+  // strip would leave the worker broken and the app would silently fall back to
+  // the main thread, which is exactly the kind of failure nobody notices.
+  const m = dist().match(/window\.TL_CORE_SRC=("(?:\\.|[^"\\])*")/);
+  assert.ok(m, 'TL_CORE_SRC missing from dist');
+  const src = JSON.parse(m[1]);
+
+  assert.ok(!/^\s*\/\//m.test(src), 'whole-line comments should have been stripped');
+  const fake = {};
+  new Function('self', src)(fake);
+  assert.ok(fake.ThreadlensCore, 'the stripped source did not define ThreadlensCore');
+  for (const fn of ['parseChat', 'createAnalyzer', 'findings', 'toMarkdown'])
+    assert.strictEqual(typeof fake.ThreadlensCore[fn], 'function', `worker core is missing ${fn}`);
+
+  // and it must still actually parse a chat
+  const p = fake.ThreadlensCore.parseChat('01/02/2026, 10:01 - A: hello there friend\n01/02/2026, 10:02 - B: hi');
+  assert.strictEqual(p.messages.length, 2);
 });
