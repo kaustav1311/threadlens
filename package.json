@@ -1,0 +1,11 @@
+{
+  "name": "threadlens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private, in-browser analysis of WhatsApp chat exports.",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"web/test/*.test.js\""
+  }
+}

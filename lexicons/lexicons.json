@@ -1,0 +1,35 @@
+{
+  "_about": "Threadlens word lists. Original lists written for this project (MIT), except: 'absolutist' follows Al-Mosaiwi & Johnstone (2018, Clinical Psychological Science); sentiment uses the VADER lexicon (MIT, Hutto & Gilbert 2014) in vader.json. English + romanised Hindi/Hinglish. PRs welcome for more languages.",
+  "absolutist": ["absolutely","all","always","complete","completely","constant","constantly","definitely","entire","ever","every","everyone","everything","full","must","never","nothing","totally","whole","hamesha","kabhi","sab","sabse","bilkul","simple"],
+  "hedge": ["maybe","perhaps","might","possibly","probably","guess","seems","seem","unsure","ig","idk","shayad","lagta","i think","not sure","could be","ho sakta"],
+  "self": ["i","me","my","mine","myself","im","i'm","i've","i'll","mai","main","mera","meri","mere","mujhe","mujhko"],
+  "other": ["you","your","yours","yourself","u","ur","you're","youre","tu","tum","tujhe","tujh","tera","teri","tere","tumhe","tumhara","aap","aapka","apne"],
+  "we": ["we","us","our","ours","ourselves","hum","humara","humari","hamara","hamari","humlog"],
+  "evidence": ["fact","facts","source","sources","evidence","proof","prove","proven","data","study","report","court","judgment","judgement","verdict","trial","record","records","link","citation","cite","verified","verify","fact-check","factcheck","research","statistics","official","documented","saboot","praman"],
+  "politeness": ["please","pls","plz","thanks","thank","thankyou","sorry","appreciate","kindly","welcome","dhanyavaad","shukriya","maaf","maafi"],
+  "affection": ["love","miss","care","dear","sweet","hug","hugs","proud","beautiful","cute","jaan","pyaar","pyar","yaar","babe","baby"],
+  "apology": ["sorry","apologise","apologize","apologies","my bad","my fault","maaf","maafi","galti"],
+  "urgency": ["asap","urgent","urgently","immediately","now","today","eod","deadline","quick","quickly","jaldi","abhi"],
+  "action": ["will","done","send","sent","share","shared","update","fix","fixed","review","call","meet","schedule","deliver","finish","finished","complete","plan","karta","karunga","karenge","bhej"],
+  "profanity": ["fuck","fucking","fucked","motherfucker","motherfuckers","motherfucking","shit","bullshit","ass","asshole","bitch","bastard","damn","crap","dick","wtf","stfu","bc","mc","bsdk","bhosdike","chutiya","chutiye","madarchod","behenchod","gandu","harami","kamina","kutta","kutte","saala","saale","suar","suaro","guh"],
+  "insult": ["idiot","stupid","dumb","moron","fool","clown","loser","pathetic","brainwashed","ignorant","illiterate","retard","joker","coward","hypocrite","hypocrites","liar","murkh","bewakoof","pagal","gadha","ullu","jahil","andha","nalayak","nikamma"],
+  "political_label": ["andhbhakt","bhakt","bhakts","andhnamazi","sickular","libtard","libtards","urban naxal","anti-national","antinational","anti national","tukde tukde","islamo-leftist","islamoleftist","sanghi","sanghis","chaddi","commie","commies","leftist","leftists","jihadi","khangressi","presstitute","godi media","it cell","fascist","fascists","woke","snowflake","traitor","deshdrohi","gaddar"],
+  "status_hierarchy": ["chote","chotu","bacche","bachche","bacha","bachcha","launde","lalla","lala","beta","kid","kiddo","junior","grow up","mature","immature","intellect","iq","qualify","inferior","superior","your kind"],
+  "laugh": ["lol","lmao","lmfao","rofl","haha","hahaha","hehe","😂","🤣","😆","😹"],
+  "mock": ["🤡","🙄","😏","😒","🥱","clown","slow claps","slow clap","cope","ok boomer","sure buddy","sure jan"],
+  "moral": {
+    "care": ["care","harm","hurt","suffer","suffering","protect","safety","safe","kind","kindness","cruel","cruelty","victim","victims","pain","compassion","humane","human","humanity","killed","kill","violence","dying","poor","help","insaan","insaniyat","dard"],
+    "fairness": ["fair","unfair","fairness","justice","injustice","rights","equal","equality","bias","biased","selective","double standard","hypocrisy","trial","bail","due process","law","constitution","discrimination","nyay","insaaf","barabar"],
+    "loyalty": ["nation","national","country","patriot","patriotic","loyal","loyalty","betray","betrayal","traitor","enemy","enemies","our people","community","family","brother","bharat","desh","deshbhakt","watan","army","soldier","soldiers","sacrifice"],
+    "authority": ["respect","obey","order","law and order","authority","leader","leaders","government","tradition","duty","discipline","elders","rule","rules","command","sanskar","izzat","maryada"],
+    "purity": ["pure","purity","sacred","holy","dirty","disgust","disgusting","filth","filthy","sin","shame","shameful","gross","yuck","ewww","ew","pavitra","ganda","gandi"]
+  },
+  "rhetoric": {
+    "whataboutism": ["what about","whatabout","and what about","why didn't you talk about","why don't you talk about","where were you when","you didn't say anything about","but what about","tab kaha the","tab kahan the","us waqt kaha"],
+    "false_dilemma": ["if not .{1,25} then who","either you .{1,40} or","leave the country","leave this country","go to pakistan","go to bangladesh","you are either","with us or against"],
+    "exit_or_concession": ["agree to disagree","you won","i lost","whatever makes you happy","as you say","whatever you say","whatever suits you","no issues","i don't want to debate","i dont want to debate","let's drop it","lets drop it","not going to reply","peace out"],
+    "unfalsifiable": ["will never change","that will never change","i don't care","i dont care","happy with my facts","that's final","thats final","nothing will change my","no matter what you say"],
+    "evidence_request": ["give me sources","give sources","source\\?","sources\\?","proof\\?","show me proof","fact check","fact-check","where is the proof","any proof","link\\?"],
+    "personal_attack": ["no one taught you","nobody taught you","your simple brain","feel bad for people around you","your kind","you people","learn things first","go study","grow up","your upbringing","your parents"]
+  }
+}

@@ -1,0 +1,106 @@
+<header class="wrap top">
+  <a class="brand" href="#top" id="top" aria-label="Threadlens home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="6" width="19" height="13" rx="4" fill="var(--accent)"/><rect x="11" y="13" width="19" height="13" rx="4" fill="none" stroke="var(--ink)" stroke-width="2.2"/><circle cx="20.5" cy="19.5" r="2.4" fill="var(--ink)"/></svg>
+    threadlens
+  </a>
+  <nav class="nav" aria-label="Page">
+    <a href="#how">How it works</a>
+    <a href="#method">What it measures</a>
+    <a href="#privacy">Privacy</a>
+    <a href="https://github.com/kaustav1311/threadlens" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="wrap hero" aria-labelledby="h1">
+    <div>
+      <h1 id="h1">Read the whole thread, not just the last message.</h1>
+      <p class="lede">Drop in a WhatsApp chat export. Threadlens measures how the conversation went: who asked and who asserted, where the heat rose, who reached out, and whose words leaned on evidence.</p>
+      <div class="promise">
+        <ul>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Nothing is uploaded.</b> Your chat is read and scored inside this tab, then forgotten when you close it.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span>No account, no tracking, no cookies. Open source under MIT.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span>Every number shows how it was counted, and both sides are scored the same way.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="drop" aria-labelledby="drop-title">
+      <div class="zone" id="zone" tabindex="0" role="button" aria-describedby="drop-formats">
+        <strong id="drop-title">Drop your chat export here</strong>
+        <span class="formats" id="drop-formats">.zip, .txt or .docx · up to 25 MB · or paste the text</span>
+        <span class="line-sample" aria-label="Example of an export line">21/09/2026, 01:02 - Ravi: Ok since you love "facts" so much…</span>
+        <div class="row" style="justify-content:center">
+          <button class="btn primary" id="pick" type="button">Choose file</button>
+          <button class="btn" id="paste-toggle" type="button">Paste text</button>
+          <button class="btn ghost" id="load-sample" type="button">Load the sample</button>
+        </div>
+        <input type="file" id="file" accept=".txt,.zip,.docx,text/plain,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+      </div>
+      <div id="paste-box" hidden>
+        <label for="paste" class="eyebrow">Paste exported chat text</label>
+        <textarea id="paste" spellcheck="false" placeholder="21/09/2026, 01:02 - Name: message…"></textarea>
+        <div class="row" style="margin-top:8px"><button class="btn primary" id="paste-go" type="button">Analyse pasted text</button></div>
+      </div>
+      <div class="opts">
+        <label><input type="checkbox" id="anon"> Replace names with Person A, B…</label>
+        <label>Dates <select id="order"><option value="auto">Auto-detect</option><option value="DMY">DD/MM/YY</option><option value="MDY">MM/DD/YY</option><option value="YMD">YYYY/MM/DD</option></select></label>
+        <label><input type="checkbox" id="showq" checked> Show quoted messages</label>
+      </div>
+      <p class="err" id="err" role="alert" hidden></p>
+    </div>
+  </section>
+
+  <div class="lensbar" id="lensbar">
+    <div class="wrap">
+      <div class="seg" role="group" aria-label="Choose a lens">
+        <button type="button" data-lens="overview" aria-pressed="false">Overview</button>
+        <button type="button" data-lens="debate" aria-pressed="true">Debate</button>
+        <button type="button" data-lens="personal" aria-pressed="false">Personal</button>
+        <button type="button" data-lens="work" aria-pressed="false">Work</button>
+      </div>
+      <p class="lens-blurb" id="lens-blurb"></p>
+    </div>
+  </div>
+
+  <section class="wrap results" id="results" aria-live="polite"></section>
+
+  <section class="wrap section" id="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ol class="steps">
+      <li><h3>Export the chat</h3><p>In WhatsApp, open the chat → ⋮ or the contact name → <b>More → Export chat → Without media</b>. You get a .txt or .zip.</p></li>
+      <li><h3>Drop it here</h3><p>The file is read in this browser tab. Parsing handles Android and iPhone exports, 12- and 24-hour clocks, and Word copies of a chat.</p></li>
+      <li><h3>Pick a lens</h3><p>Debate, Personal, Work or Overview. Each lens shows the measures that matter for that kind of conversation. Copy or download the report.</p></li>
+    </ol>
+  </section>
+
+  <section class="wrap section" id="method" aria-labelledby="method-h">
+    <h2 id="method-h">What it measures</h2>
+    <dl class="method">
+      <div><dt>Questions vs. assertions</dt><dd>Share of each person's messages that ask something. People who are testing a claim ask; people defending one assert.</dd></div>
+      <div><dt>Absolutist words</dt><dd>always, never, every, nothing… A validated marker of black-and-white thinking (Al-Mosaiwi &amp; Johnstone, 2018).</dd></div>
+      <div><dt>Evidence words</dt><dd>source, proof, data, court, report… How often someone reaches for something checkable.</dd></div>
+      <div><dt>Heat</dt><dd>A transparent 0–1 hostility heuristic from insults, profanity, group labels, put-downs and shouting, damped by message length. Watch its trend, not a single value.</dd></div>
+      <div><dt>Tone</dt><dd>Average sentiment from the open VADER lexicon (Hutto &amp; Gilbert, 2014). English-first, so it undercounts Hinglish.</dd></div>
+      <div><dt>Moral vocabulary</dt><dd>Words tied to care, fairness, loyalty, authority and purity, after Moral Foundations Theory (Graham, Haidt &amp; Nosek, 2009).</dd></div>
+      <div><dt>Rhetorical cues</dt><dd>Phrase patterns for whataboutism, false choices, exits and returns, unfalsifiable certainty and personal attacks. Each cue links to the messages that matched.</dd></div>
+      <div><dt>Rhythm</dt><dd>Who starts conversations after a 6-hour gap, median reply times, and after-hours messaging.</dd></div>
+    </dl>
+  </section>
+
+  <section class="wrap section" id="privacy" aria-labelledby="privacy-h">
+    <h2 id="privacy-h">Privacy and fair use</h2>
+    <div class="faq">
+      <details open><summary>Where does my chat go?</summary><p>Nowhere. The page's code runs in your browser. The hosted version ships with a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so it cannot send data anywhere even if it tried. You can check this in your browser's network tab, or download the single HTML file and run it offline.</p></details>
+      <details><summary>Is this a psychological assessment?</summary><p>No. These are word counts and phrase patterns. They cannot detect personality, intelligence or any condition, and they misread sarcasm, quotes and mixed languages. Use them to start a better conversation, not to settle one.</p></details>
+      <details><summary>Should I analyse someone else's messages?</summary><p>A chat you are part of is also the other person's. Keep reports private, anonymise names before sharing anything, and never publish someone's messages without their consent.</p></details>
+      <details><summary>Are there limits?</summary><p>Files up to 25 MB and 250,000 messages. The page also allows 8 analyses per 10 minutes, which keeps your browser responsive on large exports. There is no server, so nothing else needs rate-limiting. The optional self-hosted API has its own per-IP limits.</p></details>
+      <details><summary>Can I get deeper analysis?</summary><p>The repository includes a Python CLI and a self-hosted API that add machine-learning toxicity (Detoxify) and fallacy classifiers. They run on your own machine, too.</p></details>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <span>Threadlens · MIT licensed · Not a diagnostic tool.</span>
+  <span><a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source on GitHub</a> · <a href="#privacy">Privacy</a></span>
+</footer>

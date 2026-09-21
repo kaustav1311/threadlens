@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "threadlens"
+version = "0.1.0"
+description = "Private, local analysis of WhatsApp chat exports: questions vs assertions, heat, evidence, rhythm."
+readme = "../README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Kaustav Mallick" }]
+dependencies = []
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
+deep = ["detoxify>=0.5", "transformers>=4.40", "torch"]
+dev = ["pytest>=8", "httpx>=0.27", "fastapi>=0.110", "python-multipart>=0.0.9"]
+
+[project.scripts]
+threadlens = "threadlens.cli:main"
+
+[tool.setuptools]
+packages = ["threadlens"]
+
+[tool.setuptools.package-data]
+threadlens = ["data/*.json"]
