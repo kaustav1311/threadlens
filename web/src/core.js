@@ -90,6 +90,9 @@
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   const IS_WORDCHAR = /[\p{L}\p{N}']/u;
 
+  /** A lexicon entry is either a flat array or an object of tagged arrays (e.g. political_label). */
+  function listOf(v) { return Array.isArray(v) ? v : Object.keys(v).reduce((a, k) => a.concat(v[k]), []); }
+
   /** Compile a word list into {words:Set, phrases:[RegExp], emoji:[str]}. */
   function compileList(list, isRegex) {
     const words = new Set(), phrases = [], emoji = [];
@@ -143,11 +146,21 @@
   function createAnalyzer(lex, vader) {
     const L = {};
     for (const k of Object.keys(lex)) {
-      if (k.startsWith('_') || k === 'moral' || k === 'rhetoric') continue;
-      L[k] = compileList(lex[k]);
+      if (k.startsWith('_') || k === 'moral' || k === 'rhetoric' || k === 'rigor') continue;
+      L[k] = compileList(listOf(lex[k]));
     }
     const MORAL = {}; for (const k of Object.keys(lex.moral)) MORAL[k] = compileList(lex.moral[k]);
     const RHET = {}; for (const k of Object.keys(lex.rhetoric)) RHET[k] = compileList(lex.rhetoric[k], true);
+    const rg = lex.rigor || { stopwords: [], factual_verb: [], opinion_opener: [], intent_opener: [], source_term: [], concession: [], self_correction: [] };
+    const R = {
+      stopwords: new Set(rg.stopwords),
+      factualVerb: new Set(rg.factual_verb),
+      opinionOpener: rg.opinion_opener.map(s => s.toLowerCase()),
+      intentOpener: (rg.intent_opener || []).map(s => s.toLowerCase()),
+      sourceTerm: compileList(rg.source_term),
+      concession: compileList(rg.concession),
+      selfCorrection: compileList(rg.self_correction, true),
+    };
 
     function scoreMessage(m) {
       const lower = m.text.toLowerCase();
@@ -278,15 +291,284 @@
       const hottest = scored.filter(s => s.heat >= 0.5).sort((a, b) => b.heat - a.heat).slice(0, 6)
         .map(s => ({ who: s.who, date: s.date, heat: s.heat, text: s.text.slice(0, 240) }));
 
+      const rigor = rigorAnalysis(scored, people, R);
+
       return {
-        people, stats, series, hottest, others,
+        people, stats, series, hottest, others, rigor,
         range: { from: msgs[0].date, to: msgs[msgs.length - 1].date, days: days.length },
         totals: { messages: msgs.length, words: stats.reduce((a, s) => a + s.words, 0) },
         dateOrder: parsed.dateOrder,
       };
     }
 
-    return { analyse, scoreMessage };
+    return { analyse, scoreMessage, rigor: (scored, people) => rigorAnalysis(scored, people, R) };
+  }
+
+  /* ------------------------------------------------------------------ rigor
+   * "How well did each person argue?" — never "who was right?".
+   * Every component is a conduct measure: sourcing, answering, staying on topic,
+   * civility, hedging, self-correction. Nothing here can read a political position:
+   * the political_label list is scored identically whoever uses it, and the mirrored
+   * sample pair in samples/ is a regression test that swapping sides swaps the scores.
+   */
+
+  const RIGOR_WEIGHTS = { sourcing: 25, specificity: 10, responsiveness: 20, topic: 15, conduct: 15, calibration: 10, selfCorrection: 5 };
+  const RIGOR_LABELS = {
+    sourcing: 'Sourcing', specificity: 'Specificity', responsiveness: 'Answering',
+    topic: 'Topic discipline', conduct: 'Conduct', calibration: 'Calibration', selfCorrection: 'Self-correction',
+  };
+  const RIGOR_HOW = {
+    sourcing: 'Share of this person’s factual claims that point at something checkable: a link, a named report/court/section, a date, or a statistic.',
+    specificity: 'How concrete the claims are — numbers, dates and proper nouns per claim sentence, capped so one very detailed line cannot carry the score.',
+    responsiveness: 'Of the direct questions the other person asked, the share this person engaged with in the next 6 messages (sharing at least two content words with the question).',
+    topic: 'How close their messages stay to the opening topic (TF–IDF of the first 10 messages), minus a penalty each time they swerve off-topic right after being challenged.',
+    conduct: 'Starts at 1 and falls with personal attacks, group labels, status put-downs and profanity per 100 words \u2014 four per 100 words takes it to zero. Identical list for everyone.',
+    calibration: 'Hedging and granting the other side a point raise it; absolutist words (always, never, everyone) lower it. A neutral speaker sits at 0.50.',
+    selfCorrection: 'Explicitly correcting one’s own earlier claim (“I was wrong about…”, “scratch that”). Two corrections is full marks.',
+  };
+
+  const RIGOR_ANSWER_WINDOW = 6;   // messages after a question in which a reply still counts as answering it
+  const RIGOR_MIN_CLAIM_WORDS = 6; // shorter sentences are too thin to call a claim
+  const RIGOR_KEYWORD_MIN = 3;     // content words must be this long to count for overlap
+  const RIGOR_ANSWER_SIM = 0.2;    // share of a question's distinctive weight a reply must echo to count as engaging with it
+  const RIGOR_OVERLAP = 2;         // shared content words needed to link a reply to a claim
+  const TOPIC_OPENING_MSGS = 10;
+  const TOPIC_TERMS = 12;
+  const TOPIC_FULL_MATCH = 0.25;   // matching 25% of the opening topic's weight counts as fully on-topic
+  const DRIFT_HIGH = 0.8;
+  const DRIFT_JUMP = 0.3;
+  const GOALPOST_PENALTY = 0.1;
+
+  const RE_URL = /(?:https?:\/\/|www\.)\S+/i;
+  const RE_YEAR = /\b(?:19|20)\d{2}\b/;
+  // A bare month prefix is not a date: /\bmar[a-z]*/ also matches "market", and /\bmay[a-z]*/
+  // matches "maybe". Require a day or a numeric date next to it.
+  const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*';
+  const RE_DATE = new RegExp(
+    '\\b\\d{1,2}(?:st|nd|rd|th)?\\s+' + MONTH + '\\b' +
+    '|\\b' + MONTH + '\\.?\\s+\\d{1,2}\\b' +
+    '|\\b\\d{1,2}[\\/.-]\\d{1,2}[\\/.-]\\d{2,4}\\b', 'i');
+  const RE_STAT = /\b\d+(?:[.,]\d+)?\s*(?:%|percent|per cent|crore|lakh|lakhs|million|billion|km|kg|tonnes?|rs\.?|inr|usd)\b|[₹$£€]\s?\d|\b\d{2,}\b/i;
+  const RE_PROPER = /^[A-Z][a-z]{2,}/;
+
+  function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+  /** Split a message into sentences. A newline ends one too: chat writers rarely punctuate. */
+  function splitSentences(text) {
+    return String(text).split(/(?<=[.!?…])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+  }
+
+  /** Content words used for question/answer overlap and topic matching. */
+  function contentWords(tokens, stop) {
+    const out = [];
+    for (const t of tokens) if (t.length >= RIGOR_KEYWORD_MIN && !stop.has(t)) out.push(t);
+    return out;
+  }
+
+  /** Does this sentence point at anything a reader could go and check? */
+  function claimEvidence(sentence, lower, tokens, R) {
+    const url = RE_URL.test(sentence);
+    const named = countList(R.sourceTerm, tokens, lower) > 0;
+    const dated = RE_YEAR.test(sentence) || RE_DATE.test(sentence);
+    const stat = RE_STAT.test(sentence);
+    let proper = 0;
+    const words = sentence.split(/\s+/);
+    for (let i = 1; i < words.length; i++) if (RE_PROPER.test(words[i])) proper++;
+    const sourced = url || named;
+    const specific = dated || stat || proper > 0;
+    return {
+      url, named, dated, stat, proper, sourced, specific,
+      checkable: url || named || dated || stat,
+      status: sourced ? 'sourced' : specific ? 'specific' : 'vague',
+      specificity: Math.min(1, ((dated ? 1 : 0) + (stat ? 1 : 0) + Math.min(proper, 2) * 0.5) / 2),
+    };
+  }
+
+  function overlapCount(a, b) { let n = 0; for (const t of a) if (b.has(t)) n++; return n; }
+
+  /**
+   * How much of a question's distinctive vocabulary a reply echoes, 0..1.
+   * Weighted by IDF so echoing "shopkeepers" counts far more than echoing "think":
+   * a flat word count made every short reply look like a non-answer.
+   */
+  function echoScore(qkw, replyWords, idf) {
+    let total = 0, hit = 0;
+    const have = new Set(replyWords);
+    for (const t of qkw) { const w = idf(t); total += w; if (have.has(t)) hit += w; }
+    return total ? hit / total : 0;
+  }
+
+  /**
+   * Score argument quality per person. `scored` is the per-message output of analyse().
+   * Components that do not apply (nobody asked them anything, they made no claims) are
+   * null and drop out of the weighted average rather than scoring zero.
+   */
+  function rigorAnalysis(scored, people, R) {
+    const msgs = scored;
+    const stop = R.stopwords;
+    // Re-tokenise here rather than keeping tokens on every scored message: on a 50k-message
+    // chat that array would dominate memory, and this pass is cheap.
+    const toks = msgs.map(m => tokenize(m.text.toLowerCase()));
+
+    /* --- opening topic: TF-IDF over messages, so shared chatter words drop out --- */
+    const df = Object.create(null);
+    const perMsgWords = msgs.map((m, i) => {
+      const w = contentWords(toks[i], stop);
+      for (const t of new Set(w)) df[t] = (df[t] || 0) + 1;
+      return w;
+    });
+    const N = Math.max(msgs.length, 1);
+    const idf = t => Math.log(1 + N / (1 + (df[t] || 0)));
+    const tf = Object.create(null);
+    for (let i = 0; i < Math.min(TOPIC_OPENING_MSGS, msgs.length); i++)
+      for (const t of perMsgWords[i]) tf[t] = (tf[t] || 0) + 1;
+    const topic = Object.keys(tf)
+      .map(t => ({ t, w: tf[t] * idf(t) }))
+      .sort((a, b) => b.w - a.w || (a.t < b.t ? -1 : 1))
+      .slice(0, TOPIC_TERMS);
+    const topicW = topic.reduce((a, x) => a + x.w, 0);
+    const topicIdx = Object.create(null);
+    for (const x of topic) topicIdx[x.t] = x.w;
+
+    const drift = perMsgWords.map(w => {
+      if (!topicW) return 0;
+      let hit = 0;
+      for (const t of new Set(w)) if (topicIdx[t]) hit += topicIdx[t];
+      return 1 - clamp01(hit / (TOPIC_FULL_MATCH * topicW));
+    });
+
+    /* --- per person accumulators --- */
+    const P = {};
+    for (const p of people) P[p] = {
+      claims: [], questionsAsked: 0, answered: 0, putToThem: 0,
+      drifts: [], goalposts: [], concession: 0, selfCorrection: 0,
+      hostile: 0, words: 0, hedge: 0, absolutist: 0,
+    };
+
+    /* --- sentences: claims and questions --- */
+    const ledger = [];
+    const questions = [];
+    msgs.forEach((m, i) => {
+      const p = P[m.who];
+      if (!p) return;
+      p.drifts.push(drift[i]);
+      p.words += m.words;
+      p.hostile += (m.c.profanity || 0) + (m.c.insult || 0) + (m.c.political_label || 0) + (m.c.status_hierarchy || 0) + (m.rhet.personal_attack || 0);
+      p.hedge += m.c.hedge || 0;
+      p.absolutist += m.c.absolutist || 0;
+      const lowerMsg = m.text.toLowerCase();
+      p.concession += countList(R.concession, toks[i], lowerMsg);
+      p.selfCorrection += countList(R.selfCorrection, toks[i], lowerMsg);
+
+      for (const sent of splitSentences(m.text)) {
+        const lower = sent.toLowerCase();
+        const sTok = tokenize(lower);
+        if (!sTok.length) continue;
+        if (sent.indexOf('?') >= 0) {
+          const kw = contentWords(sTok, stop);
+          if (kw.length) { questions.push({ who: m.who, i, date: m.date, text: sent, kw: new Set(kw), answered: false }); p.questionsAsked++; }
+          continue;
+        }
+        if (sTok.length < RIGOR_MIN_CLAIM_WORDS) continue;
+        if (!sTok.some(t => R.factualVerb.has(t))) continue;
+        // An opinion, an offer, a plan or a request is not a checkable claim.
+        // Counting them inflates the Sourcing denominator and makes a careful
+        // speaker look vague, so they are skipped rather than scored.
+        let skip = false;
+        for (const o of R.opinionOpener) { const at = lower.indexOf(o); if (at >= 0 && at < 30) { skip = true; break; } }
+        if (!skip) for (const o of R.intentOpener) { const at = lower.indexOf(o); if (at >= 0 && at < 30) { skip = true; break; } }
+        if (skip) continue;
+        const claim = { who: m.who, i, date: m.date, text: sent, kw: new Set(contentWords(sTok, stop)), challenged: false, challengedAt: -1, answered: false, ...claimEvidence(sent, lower, sTok, R) };
+        p.claims.push(claim);
+        ledger.push(claim);
+      }
+    });
+
+    /* --- responsiveness: did the other person engage with the question? --- */
+    for (const q of questions) {
+      for (const name of people) if (name !== q.who) P[name].putToThem++;
+      for (let j = q.i + 1; j <= Math.min(msgs.length - 1, q.i + RIGOR_ANSWER_WINDOW); j++) {
+        const m = msgs[j];
+        if (m.who === q.who || !P[m.who]) continue;
+        if (echoScore(q.kw, contentWords(toks[j], stop), idf) >= RIGOR_ANSWER_SIM) {
+          P[m.who].answered++;
+          q.answered = true;
+          break;
+        }
+      }
+    }
+
+    /* --- was a claim challenged, and did its author then back it up? --- */
+    for (const c of ledger) {
+      for (let j = c.i + 1; j <= Math.min(msgs.length - 1, c.i + RIGOR_ANSWER_WINDOW); j++) {
+        const m = msgs[j];
+        if (m.who === c.who) continue;
+        const isChallenge = (m.rhet.evidence_request || 0) > 0 || m.text.indexOf('?') >= 0;
+        if (isChallenge && overlapCount(c.kw, new Set(contentWords(toks[j], stop))) >= RIGOR_OVERLAP) { c.challenged = true; c.challengedAt = j; break; }
+      }
+      if (!c.challenged) continue;
+      for (let j = c.challengedAt + 1; j <= Math.min(msgs.length - 1, c.challengedAt + RIGOR_ANSWER_WINDOW) && !c.answered; j++) {
+        const m = msgs[j];
+        if (m.who !== c.who) continue;
+        for (const sent of splitSentences(m.text)) {
+          const lower = sent.toLowerCase();
+          const sTok = tokenize(lower);
+          if (overlapCount(c.kw, new Set(contentWords(sTok, stop))) >= RIGOR_OVERLAP && claimEvidence(sent, lower, sTok, R).checkable) { c.answered = true; break; }
+        }
+      }
+    }
+
+    /* --- goalpost shifts: challenged, then an off-topic swerve --- */
+    msgs.forEach((m, i) => {
+      const p = P[m.who];
+      if (!p || i === 0) return;
+      const prev = msgs[i - 1];
+      if (prev.who === m.who) return;
+      if (!((prev.rhet.evidence_request || 0) > 0 || prev.text.indexOf('?') >= 0)) return;
+      let lastOwn = -1;
+      for (let j = i - 1; j >= 0; j--) if (msgs[j].who === m.who) { lastOwn = j; break; }
+      if (lastOwn < 0) return;
+      if (drift[i] >= DRIFT_HIGH && drift[i] - drift[lastOwn] >= DRIFT_JUMP)
+        p.goalposts.push({ date: m.date, from: drift[lastOwn], to: drift[i], text: m.text.slice(0, 160) });
+    });
+
+    /* --- components --- */
+    const out = {};
+    for (const name of people) {
+      const p = P[name];
+      const n = p.claims.length;
+      const per100 = k => (p.words ? (100 * k) / p.words : 0);
+      const components = {
+        sourcing: n ? p.claims.filter(c => c.checkable).length / n : null,
+        specificity: n ? mean(p.claims.map(c => c.specificity)) : null,
+        responsiveness: p.putToThem ? Math.min(1, p.answered / p.putToThem) : null,
+        topic: p.drifts.length ? clamp01(1 - mean(p.drifts) - GOALPOST_PENALTY * p.goalposts.length) : null,
+        conduct: p.words ? clamp01(1 - per100(p.hostile) / 4) : null,
+        calibration: p.words ? clamp01(0.5 + (per100(p.hedge) + 2 * per100(p.concession) - per100(p.absolutist)) / 6) : null,
+        selfCorrection: Math.min(1, p.selfCorrection / 2),
+      };
+      let num = 0, den = 0;
+      for (const k in RIGOR_WEIGHTS) if (components[k] != null) { num += RIGOR_WEIGHTS[k] * components[k]; den += RIGOR_WEIGHTS[k]; }
+      out[name] = {
+        name, score: den ? (100 * num) / den : null, components,
+        claims: n,
+        sourcedClaims: p.claims.filter(c => c.sourced).length,
+        checkableClaims: p.claims.filter(c => c.checkable).length,
+        vagueClaims: p.claims.filter(c => c.status === 'vague').length,
+        questionsAsked: p.questionsAsked, questionsPutToThem: p.putToThem, questionsAnswered: p.answered,
+        concessions: p.concession, selfCorrections: p.selfCorrection,
+        goalposts: p.goalposts, meanDrift: p.drifts.length ? mean(p.drifts) : null,
+      };
+    }
+
+    return {
+      people: out,
+      weights: RIGOR_WEIGHTS,
+      topicTerms: topic.map(x => x.t),
+      ledger: ledger.map(c => ({ who: c.who, date: c.date, text: c.text.slice(0, 240), status: c.status, checkable: c.checkable, challenged: c.challenged, answered: c.answered })),
+      unanswered: questions.filter(q => !q.answered).map(q => ({ who: q.who, date: q.date, text: q.text.slice(0, 240) })),
+      drift: msgs.map((m, i) => ({ who: m.who, date: m.date, drift: drift[i] })),
+    };
   }
 
   /* --------------------------------------------------------------- findings */
@@ -296,22 +578,23 @@
     debate: { title: 'Debate', blurb: 'How an argument was conducted: questions vs. assertions, evidence, labels, escalation.' },
     personal: { title: 'Personal', blurb: 'Balance and warmth: who reaches out, who replies, affection and apology.' },
     work: { title: 'Work', blurb: 'Responsiveness and clarity: reply times, action words, politeness, after-hours load.' },
+    rigor: { title: 'Rigor', blurb: 'How well each side argued \u2014 sourcing, answering, staying on topic, conduct. Not who was right.', badge: 'Rigor test' },
   };
 
   const METRICS = {
     share: { label: 'Share of messages', fmt: 'pct', lenses: ['overview', 'personal', 'work'] },
-    wordsPerMsg: { label: 'Words per message', fmt: 'num1', lenses: ['overview', 'debate'] },
-    questionRate: { label: 'Messages that ask a question', fmt: 'pct', lenses: ['overview', 'debate', 'personal', 'work'] },
-    absolutist: { label: 'Absolutist words', fmt: 'rate', lenses: ['debate'], note: 'always, never, every, nothing, simple…' },
-    hedge: { label: 'Hedging words', fmt: 'rate', lenses: ['debate'], note: 'maybe, I think, probably…' },
-    evidence: { label: 'Evidence words', fmt: 'rate', lenses: ['debate', 'work'], note: 'source, proof, court, data…' },
+    wordsPerMsg: { label: 'Words per message', fmt: 'num1', lenses: ['overview', 'debate', 'rigor'] },
+    questionRate: { label: 'Messages that ask a question', fmt: 'pct', lenses: ['overview', 'debate', 'personal', 'work', 'rigor'] },
+    absolutist: { label: 'Absolutist words', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'always, never, every, nothing, simple…' },
+    hedge: { label: 'Hedging words', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'maybe, I think, probably…' },
+    evidence: { label: 'Evidence words', fmt: 'rate', lenses: ['debate', 'work', 'rigor'], note: 'source, proof, court, data…' },
     self: { label: '“I / me / my”', fmt: 'rate', lenses: ['debate', 'personal'] },
     other: { label: '“You / your”', fmt: 'rate', lenses: ['debate', 'personal'] },
     we: { label: '“We / us”', fmt: 'rate', lenses: ['personal', 'work'] },
-    politicalLabel: { label: 'Group labels', fmt: 'rate', lenses: ['debate'], note: 'bhakt, libtard, anti-national…' },
-    status: { label: 'Status / age put-downs', fmt: 'rate', lenses: ['debate'], note: 'kid, chote, grow up…' },
+    politicalLabel: { label: 'Group labels', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'bhakt, libtard, anti-national…' },
+    status: { label: 'Status / age put-downs', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'kid, chote, grow up…' },
     profanity: { label: 'Profanity', fmt: 'rate', lenses: ['overview', 'debate'] },
-    insult: { label: 'Insults', fmt: 'rate', lenses: ['debate', 'personal'] },
+    insult: { label: 'Insults', fmt: 'rate', lenses: ['debate', 'personal', 'rigor'] },
     laugh: { label: 'Laughing emoji / lol', fmt: 'int', lenses: ['overview', 'debate'] },
     mock: { label: 'Mocking emoji / phrases', fmt: 'int', lenses: ['debate'] },
     heatMean: { label: 'Heat (hostility heuristic)', fmt: 'num2', lenses: ['overview', 'debate', 'personal'] },
@@ -334,9 +617,84 @@
 
   function ratio(a, b) { return b > 0 ? a / b : a > 0 ? Infinity : 1; }
 
+  /** Findings for the Rigor lens. Conduct only: never a verdict on the position argued. */
+  function rigorFindings(res) {
+    const out = [];
+    const G = res.rigor;
+    if (!G) return out;
+    const ranked = Object.keys(G.people).map(n => G.people[n])
+      .filter(p => p.score != null && p.name !== 'Others')
+      .sort((a, b) => b.score - a.score);
+    if (ranked.length < 2) {
+      out.push({ kind: 'caveat', text: 'Rigor needs at least two people with enough text to compare.' });
+      return out;
+    }
+    const [hi, lo] = ranked;
+    out.push({
+      kind: 'compare',
+      short: hi.name + ' argued more rigorously: ' + Math.round(hi.score) + ' vs ' + Math.round(lo.score),
+      text: hi.name + ' scores ' + Math.round(hi.score) + '/100 against ' + lo.name + "'s " + Math.round(lo.score) +
+        '. This measures how the case was made \u2014 sourcing, answering, staying on topic, conduct \u2014 not whether either position is correct.',
+    });
+
+    let worst = null, gap = 0;
+    for (const k in RIGOR_WEIGHTS) {
+      const a = hi.components[k], b = lo.components[k];
+      if (a == null || b == null) continue;
+      if (Math.abs(a - b) > gap) { gap = Math.abs(a - b); worst = k; }
+    }
+    if (worst && gap >= 0.15) {
+      const a = hi.components[worst], b = lo.components[worst];
+      const lead = a > b ? hi : lo, trail = a > b ? lo : hi;
+      out.push({
+        kind: 'compare',
+        short: 'Biggest gap: ' + RIGOR_LABELS[worst].toLowerCase(),
+        text: 'The widest gap is ' + RIGOR_LABELS[worst].toLowerCase() + ': ' + lead.name + ' ' + Math.max(a, b).toFixed(2) +
+          ' against ' + trail.name + "'s " + Math.min(a, b).toFixed(2) + '. ' + RIGOR_HOW[worst],
+      });
+    }
+    for (const p of ranked.slice(0, 2)) {
+      const missed = p.questionsPutToThem - p.questionsAnswered;
+      if (p.questionsPutToThem >= 3 && missed >= 2)
+        out.push({
+          kind: 'pattern',
+          short: p.name + ' left ' + missed + ' question' + (missed === 1 ? '' : 's') + ' unanswered',
+          text: missed + ' of the ' + p.questionsPutToThem + ' direct questions put to ' + p.name +
+            ' were never engaged with in the following ' + RIGOR_ANSWER_WINDOW + ' messages.',
+        });
+      if (p.claims >= 4 && p.vagueClaims / p.claims >= 0.6)
+        out.push({
+          kind: 'pattern',
+          short: p.name + "'s claims are mostly unsourced",
+          text: p.vagueClaims + ' of ' + p.name + "'s " + p.claims + ' factual claims carry no link, date, number or named source.',
+        });
+      if (p.goalposts.length)
+        out.push({
+          kind: 'trend',
+          short: p.name + ' changed the subject under challenge',
+          text: p.name + ' swerved off the opening topic right after being challenged ' + p.goalposts.length +
+            ' time' + (p.goalposts.length === 1 ? '' : 's') + '.',
+        });
+      if (p.selfCorrections)
+        out.push({
+          kind: 'pattern',
+          short: p.name + ' corrected themselves',
+          text: p.name + ' explicitly corrected an earlier claim ' + p.selfCorrections + ' time' +
+            (p.selfCorrections === 1 ? '' : 's') + '. That is rare, and it counts for something.',
+        });
+    }
+    out.push({
+      kind: 'caveat',
+      short: 'This scores conduct, not correctness',
+      text: 'Rigor scores how an argument was made, never which side is right. The same word lists and thresholds run against everyone.',
+    });
+    return out;
+  }
+
   /** Plain-language findings. Symmetric: every comparison names both sides and the size of the gap. */
   function findings(res, lens) {
     const out = [];
+    if (lens === 'rigor') return rigorFindings(res);
     const S = res.stats.filter(s => s.name !== 'Others');
     const enough = S.filter(s => s.words >= MIN_WORDS_FOR_CLAIM);
     if (enough.length < 2) {
@@ -429,9 +787,32 @@
       md += `\n## Rhetorical cues (count)\n\n| Cue | ${names.join(' | ')} |\n|---|${names.map(() => '---').join('|')}|\n`;
       for (const k in RHET_LABELS) md += `| ${RHET_LABELS[k]} | ${res.stats.map(s => s.rhetoric[k] || 0).join(' | ')} |\n`;
     }
+    if (lens === 'rigor' && res.rigor) {
+      const G = res.rigor;
+      const ns = Object.keys(G.people).filter(n => G.people[n].score != null);
+      md += `\n## Rigor scores\n\n| Component | Weight | ${ns.join(' | ')} |\n|---|---|${ns.map(() => '---').join('|')}|\n`;
+      md += `| **Score /100** | 100 | ${ns.map(n => Math.round(G.people[n].score)).join(' | ')} |\n`;
+      for (const k in RIGOR_WEIGHTS)
+        md += `| ${RIGOR_LABELS[k]} | ${RIGOR_WEIGHTS[k]} | ${ns.map(n => (G.people[n].components[k] == null ? 'n/a' : G.people[n].components[k].toFixed(2))).join(' | ')} |\n`;
+      md += `\nComponents that do not apply are marked n/a and drop out of the weighted average.\n`;
+      md += `\nOpening topic: ${G.topicTerms.join(', ')}\n`;
+      if (G.ledger.length) {
+        md += `\n## Claim ledger\n\n| Who | When | Claim | Status | Challenged | Answered |\n|---|---|---|---|---|---|\n`;
+        for (const cl of G.ledger.slice(0, 40))
+          md += `| ${cl.who} | ${fmtDate(cl.date)} | ${cl.text.replace(/\|/g, '\\|').slice(0, 120)} | ${cl.status} | ${cl.challenged ? 'yes' : '\u2014'} | ${cl.answered ? 'yes' : '\u2014'} |\n`;
+      }
+      if (G.unanswered.length) {
+        md += `\n## Questions that never got an answer\n\n`;
+        for (const q of G.unanswered.slice(0, 20)) md += `- **${q.who}**, ${fmtDate(q.date)}: ${q.text}\n`;
+      }
+    }
     md += `\n---\nGenerated locally by Threadlens. Word-list heuristics, not a diagnosis. Sarcasm, quotes and mixed languages confuse them. Read the messages, not just the numbers.\n`;
     return md;
   }
 
-  return { parseChat, createAnalyzer, findings, toMarkdown, fmt, fmtMins, fmtDate, LENSES, METRICS, MORAL_LABELS, RHET_LABELS, MIN_WORDS_FOR_CLAIM };
+  return {
+    parseChat, createAnalyzer, findings, toMarkdown, fmt, fmtMins, fmtDate,
+    LENSES, METRICS, MORAL_LABELS, RHET_LABELS, MIN_WORDS_FOR_CLAIM,
+    RIGOR_WEIGHTS, RIGOR_LABELS, RIGOR_HOW, RIGOR_ANSWER_WINDOW, splitSentences,
+  };
 });

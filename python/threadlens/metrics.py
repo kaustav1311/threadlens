@@ -43,14 +43,24 @@ class _List:
         return n
 
 
+def _list_of(v):
+    """A lexicon entry is either a flat list or a dict of tagged lists (e.g. political_label)."""
+    return v if isinstance(v, list) else [w for tag in v.values() for w in tag]
+
+
 class Analyzer:
     def __init__(self, lex=None, vader=None):
         if lex is None:
             lex, vader = load_lexicons()
         self.vader = vader
-        self.L = {k: _List(v) for k, v in lex.items() if not k.startswith("_") and k not in ("moral", "rhetoric")}
+        self.L = {k: _List(_list_of(v)) for k, v in lex.items()
+                  if not k.startswith("_") and k not in ("moral", "rhetoric", "rigor")}
         self.MORAL = {k: _List(v) for k, v in lex["moral"].items()}
         self.RHET = {k: _List(v, True) for k, v in lex["rhetoric"].items()}
+        # imported here, not at module level: rigor.py imports helpers from this module
+        from .rigor import compile_rigor
+
+        self.R = compile_rigor(lex)
 
     def sentiment(self, tokens):
         s = 0.0
@@ -164,8 +174,11 @@ class Analyzer:
                                           "sent": mean(v[n]["sent"]) if n in v and v[n]["sent"] else None} for n in people}}
                   for d, v in sorted(by_day.items())]
         hottest = sorted((x for x in scored if x[2]["heat"] >= 0.5), key=lambda x: -x[2]["heat"])[:6]
+        from .rigor import analyse_rigor
+
         return {
             "people": people, "stats": stats, "series": series,
+            "rigor": analyse_rigor(scored, people, self.R),
             "hottest": [{"who": w, "date": m.date.isoformat(), "heat": s["heat"], "text": m.text[:240]} for w, m, s in hottest],
             "range": {"from": msgs[0].date.isoformat(), "to": msgs[-1].date.isoformat(), "days": len(by_day)},
             "totals": {"messages": len(msgs), "words": sum(s["words"] for s in stats)},

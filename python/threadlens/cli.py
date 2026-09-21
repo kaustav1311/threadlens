@@ -31,6 +31,8 @@ def main(argv=None):
     a.add_argument("--deep", action="store_true", help="Add local ML models (needs: pip install 'threadlens[deep]')")
     a.add_argument("--md", type=Path, help="Write Markdown report here")
     a.add_argument("--json", type=Path, help="Write JSON results here")
+    a.add_argument("--ledger", type=Path, help="Write the Rigor claim ledger as JSON, for a human or an LLM to verify. "
+                                               "Threadlens never labels a claim true or false itself.")
     s = sub.add_parser("serve", help="Run the self-hosted API (needs: pip install 'threadlens[server]')")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
@@ -57,6 +59,11 @@ def main(argv=None):
         if deep:
             out["deep"] = deep
         args.json.write_text(json.dumps(out, default=_json_default, indent=1), "utf-8")
+    if args.ledger:
+        args.ledger.write_text(json.dumps(
+            {"topic_terms": res["rigor"]["topic_terms"], "ledger": res["rigor"]["ledger"],
+             "unanswered": res["rigor"]["unanswered"]},
+            default=_json_default, indent=1), "utf-8")
     if not args.md:
         sys.stdout.write(md)
     return 0
