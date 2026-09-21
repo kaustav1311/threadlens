@@ -29,6 +29,9 @@ RIGOR_ANSWER_SIM = 0.2
 RIGOR_OVERLAP = 2
 TOPIC_OPENING_MSGS = 10
 TOPIC_TERMS = 12
+LEDGER_MAX = 500
+UNANSWERED_MAX = 200
+DRIFT_POINTS = 400
 TOPIC_FULL_MATCH = 0.25
 DRIFT_HIGH = 0.8
 DRIFT_JUMP = 0.3
@@ -41,8 +44,12 @@ RE_DATE = re.compile(
     r"\b\d{1,2}(?:st|nd|rd|th)?\s+" + _MONTH + r"\b"
     r"|\b" + _MONTH + r"\.?\s+\d{1,2}\b"
     r"|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", re.I)
+# "%" is not a word character, so a trailing \b after it never matches: the old
+# pattern failed on "6% a year" and only caught "40%" via the \b\d{2,}\b branch.
+# Keep \b for the spelled-out units, where it belongs.
 RE_STAT = re.compile(
-    r"\b\d+(?:[.,]\d+)?\s*(?:%|percent|per cent|crore|lakh|lakhs|million|billion|km|kg|tonnes?|rs\.?|inr|usd)\b"
+    r"\b\d+(?:[.,]\d+)?\s*%"
+    r"|\b\d+(?:[.,]\d+)?\s*(?:percent|per cent|crore|lakh|lakhs|million|billion|km|kg|tonnes?|rs\.?|inr|usd)\b"
     r"|[₹$£€]\s?\d|\b\d{2,}\b", re.I)
 RE_PROPER = re.compile(r"^[A-Z][a-z]{2,}")
 RE_SENTENCE = re.compile(r"(?<=[.!?…])\s+|\n+")
@@ -59,6 +66,14 @@ def _mean(a):
 def split_sentences(text):
     """Split a message into sentences. A newline ends one too: chat writers rarely punctuate."""
     return [s.strip() for s in RE_SENTENCE.split(str(text)) if s.strip()]
+
+
+def _downsample(arr, max_points):
+    """Keep at most `max_points` evenly spaced items. Mirrors downsample() in core.js."""
+    if len(arr) <= max_points:
+        return arr
+    step = len(arr) / max_points
+    return [arr[int(i * step)] for i in range(max_points)]
 
 
 def _content_words(tokens, stop):
@@ -112,6 +127,8 @@ def analyse_rigor(scored, people, R):
         per_msg_words.append(w)
         for t in set(w):
             df[t] = df.get(t, 0) + 1
+    # One set per message, built once: the scans below revisit the same messages.
+    content_sets = [set(w) for w in per_msg_words]
     n_msgs = max(len(msgs), 1)
 
     def idf(t):
@@ -183,8 +200,7 @@ def analyse_rigor(scored, people, R):
             ledger.append(claim)
 
     # --- responsiveness: did the other person engage with the question? ---
-    def echo_score(qkw, reply_words):
-        have = set(reply_words)
+    def echo_score(qkw, have):
         total = hit = 0.0
         for t in qkw:
             w = idf(t)
@@ -201,7 +217,7 @@ def analyse_rigor(scored, people, R):
             m = msgs[j]
             if m["who"] == q["who"] or m["who"] not in P:
                 continue
-            if echo_score(q["kw"], _content_words(toks[j], stop)) >= RIGOR_ANSWER_SIM:
+            if echo_score(q["kw"], content_sets[j]) >= RIGOR_ANSWER_SIM:
                 P[m["who"]]["answered"] += 1
                 q["answered"] = True
                 break
@@ -213,7 +229,7 @@ def analyse_rigor(scored, people, R):
             if m["who"] == c["who"]:
                 continue
             is_challenge = m["rhet"].get("evidence_request", 0) > 0 or "?" in m["text"]
-            if is_challenge and len(c["kw"] & set(_content_words(toks[j], stop))) >= RIGOR_OVERLAP:
+            if is_challenge and len(c["kw"] & content_sets[j]) >= RIGOR_OVERLAP:
                 c["challenged"] = True
                 c["challenged_at"] = j
                 break
@@ -289,11 +305,13 @@ def analyse_rigor(scored, people, R):
         "people": out,
         "weights": RIGOR_WEIGHTS,
         "topic_terms": [t for t, _ in topic],
+        "ledger_total": len(ledger),
         "ledger": [{"who": c["who"], "date": c["date"].isoformat(), "text": c["text"][:240],
                     "status": c["status"], "checkable": c["checkable"],
-                    "challenged": c["challenged"], "answered": c["answered"]} for c in ledger],
+                    "challenged": c["challenged"], "answered": c["answered"]} for c in ledger[:LEDGER_MAX]],
+        "unanswered_total": sum(1 for q in questions if not q["answered"]),
         "unanswered": [{"who": q["who"], "date": q["date"].isoformat(), "text": q["text"][:240]}
-                       for q in questions if not q["answered"]],
-        "drift": [{"who": m["who"], "date": m["date"].isoformat(), "drift": drift[i]}
-                  for i, m in enumerate(msgs)],
+                       for q in questions if not q["answered"]][:UNANSWERED_MAX],
+        "drift": _downsample([{"who": m["who"], "date": m["date"].isoformat(), "drift": drift[i]}
+                              for i, m in enumerate(msgs)], DRIFT_POINTS),
     }

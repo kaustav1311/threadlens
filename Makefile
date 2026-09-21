@@ -1,9 +1,9 @@
 .PHONY: build test sync serve
-build:            ## Build dist/index.html and the artifact fragment
+build:            ## Build dist/index.html and the artifact fragment (fails over the 400 KB budget)
 	node scripts/build.mjs
 sync:             ## Copy shared lexicons into the Python package
 	cp lexicons/*.json python/threadlens/data/
-test: sync        ## Run JS and Python tests
+test: sync build  ## Build, then run the JS and Python suites
 	node --test "web/test/*.test.js"
 	cd python && python -m pytest -q
 serve:            ## Run the self-hosted API on localhost:8000

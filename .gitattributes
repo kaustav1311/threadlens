@@ -1,0 +1,4 @@
+# CI rebuilds dist/ and diffs it against the committed copy. Without normalised
+# line endings that check fails for anyone contributing from Windows.
+* text=auto eol=lf
+*.png binary

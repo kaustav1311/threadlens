@@ -9,7 +9,12 @@
   const MAX_BYTES = 25 * 1024 * 1024;
   const MAX_MESSAGES = 250000;
   const RATE = { max: 8, windowMs: 10 * 60 * 1000 };
+  const WORKER_MIN_CHARS = 400000;  // below this the main thread finishes before a worker could start
+  const COUNT_UP_MS = 600;
+  const TOP_DIFFS = 5;
   const runs = [];
+
+  const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const $ = s => document.querySelector(s);
   const el = (tag, attrs, ...kids) => {
@@ -17,6 +22,7 @@
     for (const k in attrs || {}) {
       if (k === 'class') n.className = attrs[k];
       else if (k === 'html') n.innerHTML = attrs[k];
+      else if (k === 'style') n.setAttribute('style', attrs[k]);
       else if (k.startsWith('on')) n.addEventListener(k.slice(2), attrs[k]);
       else if (attrs[k] !== false && attrs[k] != null) n.setAttribute(k, attrs[k]);
     }
@@ -26,10 +32,11 @@
   const SVGNS = 'http://www.w3.org/2000/svg';
   const sv = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
   const color = i => `var(--s${(i % 8) + 1})`;
+  const initial = n => (n.trim()[0] || '?').toUpperCase();
 
-  const state = { raw: null, source: '', isSample: false, lens: 'debate', res: null };
+  const state = { raw: null, source: '', isSample: false, lens: 'debate', res: null, busy: false };
 
-  /* ------------------------------------------------------------ input */
+  /* --------------------------------------------------------------- input */
 
   function showError(msg) { const e = $('#err'); e.textContent = msg; e.hidden = !msg; }
 
@@ -38,13 +45,32 @@
     while (runs.length && now - runs[0] > RATE.windowMs) runs.shift();
     if (runs.length >= RATE.max) {
       const wait = Math.ceil((RATE.windowMs - (now - runs[0])) / 1000);
-      throw new Error(`You've run ${RATE.max} analyses in 10 minutes. Try again in ${wait} s. The limit keeps this tab responsive on large exports.`);
+      throw new Error(`That's ${RATE.max} analyses in 10 minutes. Give it ${wait} s. The limit is here to keep your own browser responsive on big exports, not to ration anything.`);
     }
     runs.push(now);
   }
 
+  function setProgress(pct, label) {
+    const box = $('#progress');
+    box.hidden = pct == null;
+    if (pct == null) return;
+    const fill = $('#progress-fill');
+    fill.style.transform = `scaleX(${Math.max(0, Math.min(1, pct))})`;
+    fill.parentNode.setAttribute('aria-valuenow', Math.round(pct * 100));
+    $('#progress-label').textContent = label + ' ' + Math.round(pct * 100) + '%';
+  }
+
+  function showFileCard(name, bytes) {
+    const old = $('#filecard');
+    if (old) old.remove();
+    const card = el('div', { class: 'filecard', id: 'filecard' },
+      el('span', { class: 'dot' }), el('span', null, name),
+      el('span', { class: 'size' }, bytes == null ? '' : (bytes / 1024 < 900 ? Math.round(bytes / 1024) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB')));
+    $('#progress').before(card);
+  }
+
   async function readFile(file) {
-    if (file.size > MAX_BYTES) throw new Error(`That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is 25 MB. Export the chat "Without media" to shrink it.`);
+    if (file.size > MAX_BYTES) throw new Error(`That file is ${(file.size / 1048576).toFixed(1)} MB and the limit is 25 MB. Export the chat "Without media" and it will shrink dramatically.`);
     const name = file.name.toLowerCase();
     const buf = await file.arrayBuffer();
     const head = new Uint8Array(buf.slice(0, 4));
@@ -59,7 +85,7 @@
     const txts = Object.values(zip.files).filter(f => !f.dir && /\.txt$/i.test(f.name));
     if (!txts.length) {
       if (zip.files['word/document.xml']) return docxText(buf);
-      throw new Error('That zip has no .txt chat inside. Use WhatsApp → Export chat, and upload the zip it creates.');
+      throw new Error('That zip has no .txt chat inside. Use WhatsApp → Export chat, and drop in the zip it hands you.');
     }
     txts.sort((a, b) => (/chat/i.test(b.name) - /chat/i.test(a.name)));
     return txts[0].async('string');
@@ -70,104 +96,216 @@
     const f = zip.file('word/document.xml');
     if (!f) throw new Error('That .docx could not be read. Save it again from Word, or export the chat as .txt.');
     const xml = await f.async('string');
-    const text = xml
+    return xml
       .replace(/<w:tab\/>/g, '\t').replace(/<w:br[^>]*\/>/g, '\n').replace(/<\/w:p>/g, '\n')
       .replace(/<[^>]+>/g, '')
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-    return text;
+  }
+
+  /* -------------------------------------------------------------- worker
+   * Big exports are analysed off the main thread so the page keeps painting and
+   * the progress bar keeps moving. The worker is built from a Blob of the same
+   * core.js the page uses, which is why the CSP allows worker-src blob: and
+   * nothing else. If workers are unavailable (or a host CSP blocks the blob) we
+   * fall back to the main thread and the result is identical.
+   */
+  const HARNESS = `
+    var A = null;
+    self.onmessage = function (e) {
+      var d = e.data;
+      try {
+        if (d.type === 'init') { A = ThreadlensCore.createAnalyzer(d.lex, d.vader); self.postMessage({ type: 'ready' }); return; }
+        var post = function (phase, pct) { self.postMessage({ type: 'progress', phase: phase, pct: pct }); };
+        var parsed = ThreadlensCore.parseChat(d.text, { dateOrder: d.dateOrder, onProgress: function (p) { post('Reading messages', p * 0.35); } });
+        if (parsed.messages.length > d.maxMessages) throw new Error('This chat has ' + parsed.messages.length.toLocaleString() + ' messages and the limit is ' + d.maxMessages.toLocaleString() + '. Trim the export and try again.');
+        var res = A.analyse(parsed, { anonymise: d.anonymise, onProgress: function (p) { post('Scoring every message', 0.35 + p * 0.5); } });
+        post('Weighing the argument', 0.88);
+        res.rigor; // force the lazy pass here, where it costs the user nothing
+        post('Done', 1);
+        self.postMessage({ type: 'done', res: res });
+      } catch (err) { self.postMessage({ type: 'error', message: (err && err.message) || String(err) }); }
+    };`;
+
+  let workerP = null;
+  function getWorker() {
+    if (workerP) return workerP;
+    workerP = new Promise((resolve, reject) => {
+      if (typeof Worker !== 'function' || !window.TL_CORE_SRC || !window.URL || !URL.createObjectURL) return reject(new Error('no worker'));
+      let w;
+      try {
+        w = new Worker(URL.createObjectURL(new Blob([window.TL_CORE_SRC + HARNESS], { type: 'text/javascript' })));
+      } catch (e) { return reject(e); }
+      const fail = e => reject(e instanceof Error ? e : new Error('worker failed'));
+      w.addEventListener('error', fail, { once: true });
+      w.addEventListener('message', function onready(ev) {
+        if (ev.data && ev.data.type === 'ready') { w.removeEventListener('message', onready); w.removeEventListener('error', fail); resolve(w); }
+      });
+      w.postMessage({ type: 'init', lex: LEX, vader: VADER });
+    }).catch(e => { workerP = null; throw e; });
+    return workerP;
+  }
+
+  function analyseInWorker(w, text) {
+    return new Promise((resolve, reject) => {
+      const onMsg = ev => {
+        const d = ev.data;
+        if (d.type === 'progress') return setProgress(d.pct, d.phase);
+        w.removeEventListener('message', onMsg);
+        if (d.type === 'error') reject(new Error(d.message));
+        else resolve(d.res);
+      };
+      w.addEventListener('message', onMsg);
+      w.postMessage({ type: 'run', text, dateOrder: $('#order').value, anonymise: $('#anon').checked, maxMessages: MAX_MESSAGES });
+    });
+  }
+
+  function analyseHere(text) {
+    setProgress(0.05, 'Reading messages');
+    const parsed = core.parseChat(text, { dateOrder: $('#order').value });
+    if (parsed.messages.length > MAX_MESSAGES) throw new Error(`This chat has ${parsed.messages.length.toLocaleString()} messages and the limit is ${MAX_MESSAGES.toLocaleString()}. Trim the export and try again.`);
+    setProgress(0.6, 'Scoring every message');
+    return analyzer.analyse(parsed, { anonymise: $('#anon').checked });
   }
 
   async function ingest(getText, source, isSample) {
+    if (state.busy) return;
     showError('');
+    state.busy = true;
+    $('#results').setAttribute('aria-busy', 'true');
     try {
       if (!isSample) rateCheck();
       const text = await getText();
       state.raw = text; state.source = source; state.isSample = !!isSample;
-      run();
-      if (!isSample) $('#lensbar').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-    } catch (e) { showError(e.message || String(e)); }
+      setProgress(0.02, 'Reading messages');
+      let res;
+      if (text.length >= WORKER_MIN_CHARS) {
+        try { res = await analyseInWorker(await getWorker(), text); }
+        catch (e) { res = analyseHere(text); }
+      } else {
+        res = analyseHere(text);
+      }
+      state.res = res;
+      setProgress(null);
+      render();
+      if (!isSample) $('#lensbar').scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+    } catch (e) {
+      setProgress(null);
+      showError(e.message || String(e));
+    } finally {
+      state.busy = false;
+      $('#results').setAttribute('aria-busy', 'false');
+    }
   }
 
-  function run() {
-    const parsed = core.parseChat(state.raw, { dateOrder: $('#order').value });
-    if (parsed.messages.length > MAX_MESSAGES) throw new Error(`This chat has ${parsed.messages.length.toLocaleString()} messages. The limit is ${MAX_MESSAGES.toLocaleString()}. Trim the export and try again.`);
-    state.res = analyzer.analyse(parsed, { anonymise: $('#anon').checked });
-    render();
+  function rerun() {
+    if (!state.raw) return;
+    ingest(async () => state.raw, state.source, state.isSample);
   }
 
-  /* ------------------------------------------------------------ render */
+  /* --------------------------------------------------------------- render */
+
+  function movePill() {
+    const active = $('.seg button[aria-pressed="true"]'), pill = $('#pill'), seg = $('#seg');
+    if (!active || !pill) return;
+    pill.style.width = active.offsetWidth + 'px';
+    pill.style.transform = `translateX(${active.offsetLeft - seg.clientLeft - 3}px)`;
+  }
+
+  /** Count a number up on first paint. Short, once, and skipped entirely for reduced motion. */
+  function countUp(node, to, fmt) {
+    if (reduceMotion() || !isFinite(to)) { node.textContent = fmt(to); return; }
+    const t0 = performance.now();
+    const step = now => {
+      const k = Math.min(1, (now - t0) / COUNT_UP_MS);
+      node.textContent = fmt(to * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
 
   function render() {
     const { res, lens } = state;
     const R = $('#results');
     R.replaceChildren();
+    // keep `wrap` -- it carries the page gutter and max width; overwriting className loses it
+    R.className = 'wrap results swap' + (lens === 'rigor' ? ' lens-rigor' : '');
+    // the sliding pill lives in the lens bar, outside #results, so it needs the class too
+    $('#lensbar').classList.toggle('lens-rigor', lens === 'rigor');
+    // restart the cross-fade
+    void R.offsetWidth;
     $('#lens-blurb').textContent = core.LENSES[lens].blurb;
     document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lens === lens)));
+    movePill();
     if (!res) return;
 
     const idx = Object.fromEntries(res.people.map((p, i) => [p, i]));
     const days = res.range.days;
+
     R.append(
       el('div', { class: 'banner' },
         el('div', null,
-          el('p', { class: 'eyebrow' }, core.LENSES[lens].title + ' lens'),
-          el('h2', null, state.isSample ? 'Sample: a disagreement about a car-free market' : state.source || 'Your conversation')),
-        state.isSample ? el('span', { class: 'sample-note' }, 'Sample data. Drop your own export above') : null),
+          el('p', { class: 'eyebrow' },
+            core.LENSES[lens].title + ' lens',
+            core.LENSES[lens].badge ? ' ' : null,
+            core.LENSES[lens].badge ? el('span', { class: 'badge' }, core.LENSES[lens].badge) : null),
+          el('h2', null, state.isSample ? 'Sample: an argument about a car-free market' : state.source || 'Your conversation')),
+        state.isSample ? el('span', { class: 'sample-note' }, 'Sample data — drop your own above') : null),
       el('div', { class: 'facts' },
         el('span', null, `${res.totals.messages.toLocaleString()} messages`),
         el('span', null, `${res.totals.words.toLocaleString()} words`),
-        el('span', null, `${res.people.length} people`),
-        el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)} (${days} active day${days === 1 ? '' : 's'})`),
-        el('span', { class: 'muted' }, `dates read as ${res.dateOrder}`)),
-      el('div', { class: 'people', 'aria-label': 'People' },
-        res.stats.map(s => el('span', { class: 'chip' }, el('span', { class: 'sw', style: `background:${color(idx[s.name])}` }), s.name, el('span', { class: 'muted' }, `${s.messages}`))))
-    );
+        el('span', null, `${res.people.length} ${res.people.length === 1 ? 'person' : 'people'}`),
+        el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)} · ${days} active day${days === 1 ? '' : 's'}`),
+        el('span', null, `dates read as ${res.dateOrder}`)));
 
-    const F = core.findings(res, lens);
-    R.append(el('div', { class: 'panel' },
-      el('h3', null, 'What stands out'),
-      el('ul', { class: 'findings' }, F.map(f => el('li', null, el('span', { class: 'pill ' + f.kind }, f.kind), el('span', null, f.text))))));
+    R.append(lens === 'rigor' ? rigorCards(res, idx) : scoreCards(res, idx, lens));
+    R.append(findingCards(res, lens));
 
-    const grid = el('div', { class: 'grid2' });
-    grid.append(measuresPanel(res, lens, idx));
-    const charts = el('div', { style: 'display:grid;gap:20px;min-width:0' });
-    charts.append(lineChartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'heat' : 'n'));
-    charts.append(lineChartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'n' : lens === 'work' ? 'hours' : 'heat'));
-    grid.append(charts);
-    R.append(grid);
-
-    if (lens === 'debate') {
-      const g2 = el('div', { class: 'grid2' });
-      g2.append(moralPanel(res, idx), rhetoricPanel(res, idx));
-      R.append(g2);
+    if (lens === 'rigor') {
+      R.append(claimLedger(res, idx));
+      const g = el('div', { class: 'grid2' });
+      g.append(unansweredPanel(res, idx), driftPanel(res, idx));
+      R.append(g);
+    } else {
+      const grid = el('div', { class: 'grid2' });
+      grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'heat' : 'n'));
+      grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'n' : lens === 'work' ? 'hours' : 'heat'));
+      R.append(grid);
+      if (lens === 'debate') {
+        const g2 = el('div', { class: 'grid2' });
+        g2.append(moralPanel(res, idx), rhetoricPanel(res, idx));
+        R.append(g2);
+      }
     }
+
+    R.append(measuresDrawer(res, lens, idx));
     if ((lens === 'debate' || lens === 'overview') && $('#showq').checked && res.hottest.length) R.append(hottestPanel(res, idx));
 
     R.append(el('div', { class: 'caveats' },
-      el('strong', null, 'Read these numbers carefully'),
+      el('strong', null, 'Before you screenshot this at someone'),
       el('ul', null,
-        el('li', null, 'Word lists miss sarcasm, quotations (“you said X”) and context. A person quoting an insult gets counted for it.'),
-        el('li', null, 'Romanised Hindi and other languages are only partly covered, so tone and heat undercount them.'),
-        el('li', null, `Comparisons switch off below ${core.MIN_WORDS_FOR_CLAIM} words per person. Short chats say little.`),
-        el('li', null, 'Nothing here measures personality, intelligence or mental health. Treat it as a mirror, not a verdict.'))));
+        el('li', null, 'Word lists cannot hear sarcasm, and quoting someone else’s insult counts against you.'),
+        el('li', null, 'Romanised Hindi and other mixed languages are only partly covered, so tone and heat undercount them.'),
+        el('li', null, `Comparisons switch off below ${core.MIN_WORDS_FOR_CLAIM} words per person, because short chats say nothing.`),
+        el('li', null, 'Nothing here measures personality, intelligence or mental health. It is a mirror, not a verdict.'))));
 
     const toast = el('span', { class: 'toast', 'aria-live': 'polite' });
     const md = () => core.toMarkdown(res, lens);
     const exp = el('div', { class: 'export' },
-      el('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(md()); toast.textContent = 'Copied'; } catch { toast.textContent = 'Copy blocked by the browser. Select the text in the downloaded report instead.'; } } }, 'Copy report (Markdown)'));
+      el('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(md()); toast.textContent = 'Copied'; } catch { toast.textContent = 'The browser blocked the clipboard. Download the report instead.'; } } }, 'Copy report'));
     if (ENV !== 'artifact') {
       exp.append(
         el('button', { class: 'btn', type: 'button', onclick: () => download(`threadlens-${lens}.md`, md(), 'text/markdown') }, 'Download .md'),
         el('button', { class: 'btn', type: 'button', onclick: () => download(`threadlens-${lens}.json`, JSON.stringify(res, null, 1), 'application/json') }, 'Download .json'));
     }
-    exp.append(el('button', { class: 'btn ghost', type: 'button', onclick: clearAll }, 'Clear from this tab'), toast);
+    exp.append(el('button', { class: 'btn ghost', type: 'button', onclick: clearAll }, 'Forget this chat'), toast);
     R.append(exp);
   }
 
   function clearAll() {
     state.raw = null; state.res = null; state.isSample = false;
     $('#paste').value = ''; $('#file').value = '';
-    $('#results').replaceChildren(el('p', { class: 'muted' }, 'Cleared. The chat is gone from memory. Drop another export above.'));
+    const fc = $('#filecard'); if (fc) fc.remove();
+    $('#results').replaceChildren(el('p', { class: 'muted' }, 'Gone. It only ever lived in this tab’s memory. Drop another export above.'));
   }
 
   function download(name, text, type) {
@@ -175,10 +313,126 @@
     document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
-  function measuresPanel(res, lens, idx) {
-    const keys = Object.keys(core.METRICS).filter(k => core.METRICS[k].lenses.includes(lens));
-    const t = el('table');
-    t.append(el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Measure'), res.stats.map(s => el('th', { scope: 'col' }, s.name)))));
+  /* ------------------------------------------------------------ scorecards */
+
+  function sparkline(values, stroke) {
+    const W = 200, H = 26;
+    const s = sv('svg', { class: 'spark', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+    const max = Math.max(...values, 1);
+    const x = i => (values.length === 1 ? W / 2 : (i * W) / (values.length - 1));
+    const y = v => H - 2 - (v / max) * (H - 4);
+    let d = '';
+    values.forEach((v, i) => { d += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); });
+    const path = sv('path', { class: 'line', d, fill: 'none', stroke, 'stroke-width': 1.8, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+    path.style.setProperty('--len', Math.max(W, values.length * 6));
+    s.append(path);
+    return s;
+  }
+
+  function statBlock(value, label, fmt) {
+    const b = el('b', null, '');
+    countUp(b, value, fmt);
+    return el('div', { class: 'stat' }, b, el('span', null, label));
+  }
+
+  function scoreCards(res, idx, lens) {
+    const wrap = el('div', { class: 'cards' });
+    for (const s of res.stats) {
+      const c = color(idx[s.name]);
+      const daily = res.series.map(d => (d.per[s.name] ? d.per[s.name].n : 0));
+      const card = el('div', { class: 'card', style: `--who:${c}` },
+        el('div', { class: 'who' },
+          el('span', { class: 'av', 'aria-hidden': 'true' }, initial(s.name)),
+          el('div', null, el('div', { class: 'nm' }, s.name), el('div', { class: 'sub' }, `${s.messages.toLocaleString()} messages · ${s.words.toLocaleString()} words`))),
+        el('div', { class: 'stats' },
+          statBlock(s.share * 100, 'share of messages', v => Math.round(v) + '%'),
+          statBlock(s.questionRate * 100, 'messages that ask', v => Math.round(v) + '%'),
+          lens === 'work' || lens === 'personal'
+            ? statBlock(s.replyMedianMin == null ? NaN : s.replyMedianMin, 'median reply', v => core.fmtMins(v))
+            : statBlock(s.heatMean, 'mean heat', v => v.toFixed(2)),
+          statBlock(s.initiations, 'conversations started', v => String(Math.round(v)))),
+        sparkline(daily, c));
+      wrap.append(card);
+    }
+    return wrap;
+  }
+
+  /** A "how was this computed" note that opens in place. */
+  function why(text) {
+    const note = el('p', { class: 'sub', hidden: true, style: 'grid-column:1/-1;margin:2px 0 4px' }, text);
+    const btn = el('button', {
+      class: 'why', type: 'button', 'aria-expanded': 'false',
+      'aria-label': 'How this was computed',
+      onclick: e => { const open = note.hidden; note.hidden = !open; e.currentTarget.setAttribute('aria-expanded', String(open)); },
+    }, '?');
+    return [btn, note];
+  }
+
+  function rigorCards(res, idx) {
+    const G = res.rigor;
+    const wrap = el('div', { class: 'cards' });
+    for (const name of res.people) {
+      const p = G.people[name];
+      if (!p) continue;
+      const c = color(idx[name]);
+      const card = el('div', { class: 'card', style: `--who:${c}` },
+        el('div', { class: 'who' },
+          el('span', { class: 'av', 'aria-hidden': 'true' }, initial(name)),
+          el('div', null, el('div', { class: 'nm' }, name),
+            el('div', { class: 'sub' }, `${p.claims} claim${p.claims === 1 ? '' : 's'} · ${p.checkableClaims} checkable · ${p.questionsAnswered}/${p.questionsPutToThem} questions answered`))));
+
+      const scoreEl = el('b', null, '');
+      countUp(scoreEl, p.score == null ? NaN : p.score, v => (isFinite(v) ? String(Math.round(v)) : '—'));
+      card.append(el('div', { class: 'score' }, scoreEl, el('span', null, '/ 100 rigor')));
+
+      const bd = el('div', { class: 'breakdown' });
+      for (const k of Object.keys(core.RIGOR_WEIGHTS)) {
+        const v = p.components[k];
+        const [btn, note] = why(core.RIGOR_HOW[k] + ` Worth ${core.RIGOR_WEIGHTS[k]} of 100.`);
+        const track = el('div', { class: 'track' });
+        const fill = el('i');
+        fill.style.setProperty('--w', v == null ? 0 : v);
+        track.append(fill);
+        bd.append(el('div', { class: 'brow' },
+          el('span', { class: 'lbl' }, core.RIGOR_LABELS[k], btn),
+          el('span', { class: 'v' }, v == null ? 'n/a' : v.toFixed(2)),
+          track, note));
+      }
+      card.append(bd);
+      wrap.append(card);
+    }
+    const note = el('p', { class: 'sub' }, `Opening topic read as: ${G.topicTerms.slice(0, 8).join(', ')}. Components marked n/a did not apply and are left out of the average, rather than scored zero.`);
+    return el('div', { style: 'display:grid;gap:12px' }, wrap, note);
+  }
+
+  /* -------------------------------------------------------------- findings */
+
+  function findingCards(res, lens) {
+    const F = core.findings(res, lens);
+    const ul = el('ul', { class: 'finds' });
+    for (const f of F) {
+      const short = f.short || (f.text.length > 78 ? f.text.slice(0, 74).replace(/\s\S*$/, '') + '…' : f.text);
+      const li = el('li', null,
+        el('span', { class: 'pill ' + f.kind }, f.kind),
+        el('p', { class: 'hd' }, short));
+      if (short !== f.text) li.append(el('details', null, el('summary', null, 'why?'), el('p', null, f.text)));
+      ul.append(li);
+    }
+    return el('div', null, ul);
+  }
+
+  /* ------------------------------------------------------- measures drawer */
+
+  function diffScore(res, key) {
+    const S = res.stats.filter(s => s.name !== 'Others').slice(0, 2);
+    if (S.length < 2) return 0;
+    const a = Math.abs(S[0][key] || 0), b = Math.abs(S[1][key] || 0);
+    const hi = Math.max(a, b), lo = Math.min(a, b);
+    if (!hi) return 0;
+    return (hi - lo) / hi;
+  }
+
+  function measureRows(res, keys, idx) {
     const tb = el('tbody');
     for (const k of keys) {
       const M = core.METRICS[k];
@@ -186,89 +440,182 @@
       const max = Math.max(...vals.map(v => (v == null ? 0 : Math.abs(v))), 1e-9);
       tb.append(el('tr', null,
         el('th', { scope: 'row' }, M.label, M.fmt === 'rate' ? el('span', { class: 'note' }, 'per 100 words' + (M.note ? ' · ' + M.note : '')) : M.note ? el('span', { class: 'note' }, M.note) : null),
-        res.stats.map((s, i) => el('td', { class: 'val' }, el('div', { class: 'bar' },
-          el('span', null, core.fmt(s[k], M.fmt)),
-          el('i', { style: `width:${s[k] == null ? 0 : Math.round(100 * Math.abs(s[k]) / max)}%;background:${color(idx[s.name])}` }))))));
+        res.stats.map(s => {
+          const fill = el('i', { style: `background:${color(idx[s.name])}` });
+          fill.style.setProperty('--w', s[k] == null ? 0 : Math.abs(s[k]) / max);
+          return el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, core.fmt(s[k], M.fmt)), fill));
+        })));
     }
-    t.append(tb);
-    return el('div', { class: 'panel' }, el('h3', null, 'Measures'), el('p', { class: 'sub' }, 'Same counting rules for everyone. Bars compare across each row.'), el('div', { class: 'scroll' }, t));
+    return tb;
   }
 
-  function lineChartPanel(res, idx, kind) {
-    const titles = {
-      heat: ['Heat by day', 'Average hostility heuristic of each person\'s messages that day (0–1)'],
-      n: ['Messages by day', 'Count of messages each person sent'],
-      hours: ['Time of day', 'Messages by hour, all days combined'],
-    };
-    const [title, sub] = titles[kind];
+  function measuresTable(res, keys, idx) {
+    const t = el('table');
+    t.append(el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Measure'), res.stats.map(s => el('th', { scope: 'col' }, s.name)))));
+    t.append(measureRows(res, keys, idx));
+    return el('div', { class: 'scroll' }, t);
+  }
+
+  function measuresDrawer(res, lens, idx) {
+    const keys = Object.keys(core.METRICS).filter(k => core.METRICS[k].lenses.includes(lens));
+    const ranked = keys.slice().sort((a, b) => diffScore(res, b) - diffScore(res, a));
+    const top = ranked.slice(0, TOP_DIFFS), rest = ranked.slice(TOP_DIFFS);
+    const panel = el('div', { class: 'panel' },
+      el('h3', null, 'Where you differ most'),
+      el('p', { class: 'sub' }, 'The widest gaps in this lens. Same counting rules for everyone; bars compare across each row.'),
+      measuresTable(res, top, idx));
+    if (rest.length) {
+      panel.append(el('details', null,
+        el('summary', null, `Show the other ${rest.length} measure${rest.length === 1 ? '' : 's'}`),
+        measuresTable(res, rest, idx)));
+    }
+    return panel;
+  }
+
+  /* ---------------------------------------------------------------- charts */
+
+  function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const k of [1, 2, 2.5, 5, 10]) if (k * p >= v) return k * p; return 10 * p; }
+  function shortDay(d) { const [y, mo, da] = d.split('-').map(Number); return new Date(y, mo - 1, da).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+
+  /**
+   * One line chart plus the same numbers as a table, because a chart nobody can
+   * read with a screen reader is half a chart.
+   */
+  function lineChart(title, sub, xs, series, idx, fmtV, labelX) {
     const wrap = el('div', { class: 'chart' });
-    const legend = el('div', { class: 'legend' }, res.people.map(p => el('span', null, el('i', { class: 'sw', style: `background:${color(idx[p])}` }), p)));
+    const legend = el('div', { class: 'legend' }, series.map(s => el('span', null, el('i', { class: 'sw', style: `background:${color(idx[s.name])}` }), s.name)));
     const panel = el('div', { class: 'panel' }, el('h3', null, title), el('p', { class: 'sub' }, sub), legend, wrap);
 
-    let xs, series;
-    if (kind === 'hours') {
-      xs = [...Array(24).keys()].map(h => String(h).padStart(2, '0'));
-      series = res.stats.map(s => ({ name: s.name, pts: s.hours.slice() }));
-    } else {
-      xs = res.series.map(d => d.day);
-      series = res.people.map(p => ({ name: p, pts: res.series.map(d => (kind === 'heat' ? d.per[p].heat : d.per[p].n)) }));
-    }
     const W = 520, H = 200, m = { l: 34, r: 12, t: 10, b: 26 };
     const vals = series.flatMap(s => s.pts).filter(v => v != null);
-    let yMax = kind === 'heat' ? Math.max(0.2, Math.ceil(Math.max(...vals, 0) * 10) / 10) : niceMax(Math.max(...vals, 1));
+    const isUnit = vals.every(v => v <= 1);
+    const yMax = isUnit ? Math.max(0.2, Math.ceil(Math.max(...vals, 0) * 10) / 10) : niceMax(Math.max(...vals, 1));
     const x = i => m.l + (xs.length === 1 ? (W - m.l - m.r) / 2 : (i * (W - m.l - m.r)) / (xs.length - 1));
     const y = v => H - m.b - (v / yMax) * (H - m.t - m.b);
     const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': title });
     const g = sv('g', { class: 'grid' });
-    const ticks = 4;
-    for (let i = 0; i <= ticks; i++) {
-      const v = (yMax * i) / ticks;
+    for (let i = 0; i <= 4; i++) {
+      const v = (yMax * i) / 4;
       g.append(sv('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }));
-      const t = sv('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end' }); t.textContent = kind === 'heat' ? v.toFixed(1) : Math.round(v); svg.append(t);
+      const t = sv('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end' }); t.textContent = isUnit ? v.toFixed(1) : Math.round(v); svg.append(t);
     }
     svg.prepend(g);
-    const labelEvery = Math.max(1, Math.ceil(xs.length / 6));
+    const every = Math.max(1, Math.ceil(xs.length / 6));
     xs.forEach((d, i) => {
-      if (i % labelEvery && i !== xs.length - 1) return;
+      if (i % every && i !== xs.length - 1) return;
       const t = sv('text', { x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === xs.length - 1 ? 'end' : 'middle' });
-      t.textContent = kind === 'hours' ? d : shortDay(d); svg.append(t);
+      t.textContent = labelX(d); svg.append(t);
     });
     for (const s of series) {
       const c = color(idx[s.name]);
-      let dpath = '', pen = false;
-      s.pts.forEach((v, i) => { if (v == null) { pen = false; return; } dpath += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); pen = true; });
-      svg.append(sv('path', { d: dpath, fill: 'none', stroke: c, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      let d = '', pen = false, len = 0, px = 0, py = 0;
+      s.pts.forEach((v, i) => {
+        if (v == null) { pen = false; return; }
+        const cx = x(i), cy = y(v);
+        if (pen) len += Math.hypot(cx - px, cy - py);
+        d += (pen ? 'L' : 'M') + cx.toFixed(1) + ' ' + cy.toFixed(1);
+        pen = true; px = cx; py = cy;
+      });
+      const path = sv('path', { class: 'line', d, fill: 'none', stroke: c, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+      path.style.setProperty('--len', Math.ceil(len) || 1);
+      svg.append(path);
       if (xs.length <= 45) s.pts.forEach((v, i) => { if (v != null) svg.append(sv('circle', { cx: x(i), cy: y(v), r: 3.5, fill: c, stroke: 'var(--surface)', 'stroke-width': 1.5 })); });
     }
-    // hover: crosshair + tooltip
     const cross = sv('line', { y1: m.t, y2: H - m.b, stroke: 'var(--line-strong)', 'stroke-width': 1, visibility: 'hidden' });
     svg.append(cross);
     const hit = sv('rect', { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: 'transparent' });
     svg.append(hit);
     const tip = el('div', { class: 'tip', hidden: true });
     wrap.append(svg, tip);
-    const move = ev => {
+    hit.addEventListener('pointermove', ev => {
       const r = svg.getBoundingClientRect();
-      const px = ((ev.clientX - r.left) / r.width) * W;
-      const i = Math.max(0, Math.min(xs.length - 1, Math.round(xs.length === 1 ? 0 : ((px - m.l) / (W - m.l - m.r)) * (xs.length - 1))));
+      const px2 = ((ev.clientX - r.left) / r.width) * W;
+      const i = Math.max(0, Math.min(xs.length - 1, Math.round(xs.length === 1 ? 0 : ((px2 - m.l) / (W - m.l - m.r)) * (xs.length - 1))));
       cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
       tip.hidden = false;
-      tip.textContent = (kind === 'hours' ? xs[i] + ':00' : shortDay(xs[i])) + ' · ' + series.map(s => `${s.name}: ${s.pts[i] == null ? '—' : kind === 'heat' ? s.pts[i].toFixed(2) : s.pts[i]}`).join(' · ');
+      tip.textContent = labelX(xs[i]) + ' · ' + series.map(s => `${s.name}: ${s.pts[i] == null ? '—' : fmtV(s.pts[i])}`).join(' · ');
       tip.style.left = Math.min(Math.max((x(i) / W) * r.width, 80), r.width - 80) + 'px';
       tip.style.top = (m.t / H) * r.height + 'px';
-    };
-    hit.addEventListener('pointermove', move);
+    });
     hit.addEventListener('pointerleave', () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); });
-    // table view for accessibility
+
     const tbl = el('table', null,
-      el('thead', null, el('tr', null, el('th', null, kind === 'hours' ? 'Hour' : 'Day'), series.map(s => el('th', null, s.name)))),
-      el('tbody', null, xs.map((d, i) => el('tr', null, el('td', null, d), series.map(s => el('td', null, s.pts[i] == null ? '—' : kind === 'heat' ? s.pts[i].toFixed(2) : s.pts[i]))))));
+      el('thead', null, el('tr', null, el('th', null, 'Point'), series.map(s => el('th', null, s.name)))),
+      el('tbody', null, xs.map((d, i) => el('tr', null, el('td', null, labelX(d)), series.map(s => el('td', null, s.pts[i] == null ? '—' : fmtV(s.pts[i])))))));
     panel.append(el('details', null, el('summary', null, 'Show as table'), el('div', { class: 'scroll' }, tbl)));
     return panel;
   }
 
-  function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const k of [1, 2, 2.5, 5, 10]) if (k * p >= v) return k * p; return 10 * p; }
-  function shortDay(d) { const [y, mo, da] = d.split('-').map(Number); return new Date(y, mo - 1, da).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+  function chartPanel(res, idx, kind) {
+    const titles = {
+      heat: ['Heat by day', 'Average hostility heuristic of each person’s messages that day (0–1)'],
+      n: ['Messages by day', 'How many each person sent'],
+      hours: ['Time of day', 'Messages by hour, all days combined'],
+    };
+    const [title, sub] = titles[kind];
+    if (kind === 'hours') {
+      const xs = [...Array(24).keys()].map(h => String(h).padStart(2, '0'));
+      return lineChart(title, sub, xs, res.stats.map(s => ({ name: s.name, pts: s.hours.slice() })), idx, v => String(v), d => d + ':00');
+    }
+    const xs = res.series.map(d => d.day);
+    const series = res.people.map(p => ({ name: p, pts: res.series.map(d => (kind === 'heat' ? d.per[p].heat : d.per[p].n)) }));
+    return lineChart(title, sub, xs, series, idx, v => (kind === 'heat' ? v.toFixed(2) : String(v)), shortDay);
+  }
+
+  function driftPanel(res, idx) {
+    const G = res.rigor;
+    const byWho = {};
+    for (const p of res.people) byWho[p] = [];
+    G.drift.forEach(d => { for (const p of res.people) byWho[p].push(d.who === p ? d.drift : null); });
+    const xs = G.drift.map((d, i) => i);
+    return lineChart('Drift from the opening topic', 'How far each message strays from what the argument started about. 0 is on topic, 1 is a different conversation.',
+      xs, res.people.map(p => ({ name: p, pts: byWho[p] })), idx, v => v.toFixed(2), i => '#' + (i + 1));
+  }
+
+  /* ----------------------------------------------------------- rigor panels */
+
+  function claimLedger(res, idx) {
+    const G = res.rigor;
+    const SHOWN = 12;
+    const row = c => el('tr', null,
+      el('td', null, el('span', { class: 'sw', style: `background:${color(idx[c.who])};display:inline-block;margin-right:6px` }), c.who),
+      el('td', { class: 'muted' }, core.fmtDate(c.date)),
+      el('td', { class: 'claimtext' }, c.text),
+      el('td', null, el('span', { class: 'tag ' + c.status }, c.status)),
+      el('td', null, c.challenged ? 'yes' : '—'),
+      el('td', null, c.answered ? 'yes' : c.challenged ? 'no' : '—'));
+    const head = () => el('thead', null, el('tr', null,
+      el('th', null, 'Who'), el('th', null, 'When'), el('th', null, 'Claim'),
+      el('th', null, 'Status'), el('th', null, 'Challenged'), el('th', null, 'Backed up')));
+    const first = el('table', null, head(), el('tbody', null, G.ledger.slice(0, SHOWN).map(row)));
+    const total = G.ledgerTotal != null ? G.ledgerTotal : G.ledger.length;
+    const panel = el('div', { class: 'panel' },
+      el('h3', null, 'Claim ledger'),
+      el('p', { class: 'sub' }, `Every factual-sounding sentence, and whether it pointed at anything checkable. Threadlens never marks a claim true or false — that part is still your job. ${total.toLocaleString()} found${total > G.ledger.length ? `, showing the first ${G.ledger.length}` : ''}.`),
+      el('div', { class: 'scroll' }, first));
+    if (G.ledger.length > SHOWN) {
+      panel.append(el('details', null,
+        el('summary', null, `Show all ${G.ledger.length.toLocaleString()}`),
+        el('div', { class: 'scroll' }, el('table', null, head(), el('tbody', null, G.ledger.slice(SHOWN).map(row))))));
+    }
+    return panel;
+  }
+
+  function unansweredPanel(res, idx) {
+    const G = res.rigor;
+    const total = G.unansweredTotal != null ? G.unansweredTotal : G.unanswered.length;
+    const panel = el('div', { class: 'panel' },
+      el('h3', null, 'Questions nobody answered'),
+      el('p', { class: 'sub' }, `Direct questions that got no engaging reply within the next 6 messages. ${total.toLocaleString()} of them.`));
+    if (!G.unanswered.length) { panel.append(el('p', { class: 'muted' }, 'Every question got a reply. That is genuinely rare.')); return panel; }
+    panel.append(el('div', { class: 'quotes' }, G.unanswered.slice(0, 8).map(q =>
+      el('div', { class: 'quote', style: `border-left-color:${color(idx[q.who])}` },
+        el('span', { class: 'meta' }, `${q.who} · ${core.fmtDate(q.date)}`),
+        el('p', null, q.text)))));
+    return panel;
+  }
+
+  /* ---------------------------------------------------------- other panels */
 
   function moralPanel(res, idx) {
     const t = el('table', null,
@@ -276,9 +623,13 @@
       el('tbody', null, Object.keys(core.MORAL_LABELS).map(k => {
         const vals = res.stats.map(s => s.moral[k] || 0); const max = Math.max(...vals, 1e-9);
         return el('tr', null, el('th', { scope: 'row' }, core.MORAL_LABELS[k]),
-          res.stats.map((s, i) => el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, vals[i].toFixed(2)), el('i', { style: `width:${Math.round(100 * vals[i] / max)}%;background:${color(idx[s.name])}` })))));
+          res.stats.map((s, i) => {
+            const fill = el('i', { style: `background:${color(idx[s.name])}` });
+            fill.style.setProperty('--w', vals[i] / max);
+            return el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, vals[i].toFixed(2)), fill));
+          }));
       })));
-    return el('div', { class: 'panel' }, el('h3', null, 'Moral vocabulary'), el('p', { class: 'sub' }, 'Words per 100 tied to each foundation. Opponents who stress different foundations often talk past each other.'), el('div', { class: 'scroll' }, t));
+    return el('div', { class: 'panel' }, el('h3', null, 'Moral vocabulary'), el('p', { class: 'sub' }, 'Words per 100 tied to each foundation. People arguing from different foundations tend to talk past each other.'), el('div', { class: 'scroll' }, t));
   }
 
   function rhetoricPanel(res, idx) {
@@ -289,7 +640,7 @@
     if ($('#showq').checked) {
       const ex = el('div', { class: 'quotes' });
       for (const s of res.stats) for (const k in s.examples) for (const q of s.examples[k].slice(0, 2))
-        ex.append(el('div', { class: 'quote', style: `border-left-color:${color(idx[s.name])}` }, el('span', { class: 'meta' }, `${s.name} · ${core.RHET_LABELS[k]} · ${q.date.toLocaleString()}`), el('p', null, q.text)));
+        ex.append(el('div', { class: 'quote', style: `border-left-color:${color(idx[s.name])}` }, el('span', { class: 'meta' }, `${s.name} · ${core.RHET_LABELS[k]} · ${new Date(q.date).toLocaleString()}`), el('p', null, q.text)));
       if (ex.childElementCount) panel.append(el('details', null, el('summary', null, 'Show matched messages'), ex));
     }
     return panel;
@@ -298,29 +649,41 @@
   function hottestPanel(res, idx) {
     return el('div', { class: 'panel' }, el('h3', null, 'Hottest messages'), el('p', { class: 'sub' }, 'Highest heat scores. Check whether the words were meant, quoted or joking.'),
       el('div', { class: 'quotes' }, res.hottest.map(h => el('div', { class: 'quote', style: `border-left-color:${color(idx[h.who])}` },
-        el('span', { class: 'meta' }, `${h.who} · ${h.date.toLocaleString()} · heat ${h.heat.toFixed(2)}`), el('p', null, h.text)))));
+        el('span', { class: 'meta' }, `${h.who} · ${new Date(h.date).toLocaleString()} · heat ${h.heat.toFixed(2)}`), el('p', null, h.text)))));
   }
 
-  /* ------------------------------------------------------------ wiring */
+  /* --------------------------------------------------------------- wiring */
 
   const zone = $('#zone'), file = $('#file');
   $('#pick').addEventListener('click', e => { e.stopPropagation(); file.click(); });
   zone.addEventListener('click', e => { if (e.target === zone || e.target.closest('strong,.formats')) file.click(); });
   zone.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === zone) { e.preventDefault(); file.click(); } });
-  file.addEventListener('change', () => { const f = file.files[0]; if (f) ingest(() => readFile(f), f.name); });
+  file.addEventListener('change', () => { const f = file.files[0]; if (f) { showFileCard(f.name, f.size); ingest(() => readFile(f), f.name); } });
   ['dragenter', 'dragover'].forEach(t => zone.addEventListener(t, e => { e.preventDefault(); zone.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(t => zone.addEventListener(t, e => { e.preventDefault(); zone.classList.remove('over'); }));
-  zone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) ingest(() => readFile(f), f.name); });
+  zone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) { showFileCard(f.name, f.size); ingest(() => readFile(f), f.name); } });
   $('#paste-toggle').addEventListener('click', e => { e.stopPropagation(); const b = $('#paste-box'); b.hidden = !b.hidden; if (!b.hidden) $('#paste').focus(); });
-  $('#paste-go').addEventListener('click', () => { const t = $('#paste').value; if (!t.trim()) return showError('Paste the exported chat text first.'); ingest(async () => t, 'Pasted conversation'); });
+  $('#paste-go').addEventListener('click', () => {
+    const t = $('#paste').value;
+    if (!t.trim()) return showError('Paste the exported chat text first.');
+    showFileCard('Pasted text', t.length);
+    ingest(async () => t, 'Pasted conversation');
+  });
   $('#load-sample').addEventListener('click', e => { e.stopPropagation(); ingest(async () => SAMPLE, 'Sample', true); });
   document.addEventListener('paste', e => {
     if (e.target.closest && e.target.closest('textarea,input')) return;
     const t = e.clipboardData && e.clipboardData.getData('text');
-    if (t && /\d[:.]\d{2}/.test(t)) ingest(async () => t, 'Pasted conversation');
+    if (t && /\d[:.]\d{2}/.test(t)) { showFileCard('Pasted text', t.length); ingest(async () => t, 'Pasted conversation'); }
   });
-  ['#anon', '#order', '#showq'].forEach(s => $(s).addEventListener('change', () => { if (state.raw) { try { run(); } catch (e) { showError(e.message); } } }));
+  ['#anon', '#order'].forEach(s => $(s).addEventListener('change', rerun));
+  $('#showq').addEventListener('change', () => { if (state.res) render(); });
   document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { state.lens = b.dataset.lens; render(); }));
+  addEventListener('resize', movePill);
+
+  // A lens can be deep-linked (#rigor). Only exact lens names are honoured, so the
+  // page anchors (#faq, #privacy) keep working.
+  const fromHash = location.hash.slice(1);
+  if (core.LENSES[fromHash]) state.lens = fromHash;
 
   // Open in a working state: the synthetic sample, clearly labelled.
   ingest(async () => SAMPLE, 'Sample', true);

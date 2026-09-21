@@ -10,6 +10,23 @@ jobs:
         with: { node-version: 22 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: node --test "web/test/*.test.js"
-      - run: node scripts/build.mjs
-      - run: pip install -e "python[dev]" && cd python && python -m pytest -q
+
+      - name: Lexicons are in sync
+        run: cp lexicons/*.json python/threadlens/data/
+
+      - name: Build (also enforces the 400 KB page budget)
+        run: node scripts/build.mjs
+
+      # dist/ is committed so the page works offline and can be downloaded from a
+      # release. If a UI change lands without a rebuild, the committed copy is a lie.
+      - name: Committed dist matches the sources
+        run: git diff --exit-code -- dist/ python/threadlens/data/
+          || (echo "::error::dist/ or the copied lexicons are stale. Run 'make build' (or 'make sync') and commit the result." && exit 1)
+
+      - name: JS tests
+        run: node --test "web/test/*.test.js"
+
+      # pytest shells out to node for the JS<->Python rigor parity check, so node
+      # must still be on PATH here.
+      - name: Python tests
+        run: pip install -e "python[dev]" && cd python && python -m pytest -q

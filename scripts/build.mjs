@@ -2,7 +2,7 @@
 //   node scripts/build.mjs
 // dist/index.html              full page with a strict CSP (connect-src 'none'), for GitHub Pages or offline use
 // dist/threadlens-artifact.html  body-only fragment for hosts that supply their own <html>/<head> (e.g. a Claude artifact)
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,15 +13,28 @@ const safe = s => s.replace(/<\/(script)/gi, '<\\/$1');
 
 const css = r('web/src/style.css');
 const body = r('web/src/body.html');
+const coreSrc = r('web/src/core.js');
+
+// TL_CORE_SRC is the same core.js again, as a string, so the page can build a
+// Web Worker from a Blob without fetching anything. That is the only reason the
+// CSP allows worker-src blob:, and it is why connect-src can stay 'none'.
+// The JSON in lexicons/ is kept pretty-printed so diffs are reviewable; inline it minified.
+const json = p => JSON.stringify(JSON.parse(r(p)));
+
 const scripts = env => [
   r('web/vendor/jszip.min.js'),
-  `window.TL_ENV=${JSON.stringify(env)};window.TL_LEX=${safe(r('lexicons/lexicons.json'))};window.TL_VADER=${safe(r('lexicons/vader.json'))};window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`,
-  r('web/src/core.js'),
+  `window.TL_ENV=${JSON.stringify(env)};`
+  + `window.TL_LEX=${safe(json('lexicons/lexicons.json'))};`
+  + `window.TL_VADER=${safe(json('lexicons/vader.json'))};`
+  + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`
+  + `window.TL_CORE_SRC=${safe(JSON.stringify(coreSrc))};`,
+  coreSrc,
   r('web/src/app.js'),
 ].map(safe);
 
-const title = 'Threadlens';
-const desc = 'Private, in-browser analysis of WhatsApp chat exports. Nothing is uploaded.';
+const title = 'Threadlens — see how the argument actually went';
+const desc = 'Free, private chat analysis in your browser. Drop in a WhatsApp export and see who asked and who asserted, who started it, where the heat rose, and how well each side argued. Works on relationship arguments, family group chats and work threads. Nothing is uploaded.';
+const keywords = 'whatsapp chat analysis, argument analysis, who started the argument, relationship communication patterns, couples arguing over text, group chat analysis, conversation analysis, communication style, chat statistics, debate quality, private, offline';
 
 mkdirSync(join(root, 'dist'), { recursive: true });
 
@@ -29,7 +42,7 @@ mkdirSync(join(root, 'dist'), { recursive: true });
 {
   const s = scripts('web');
   const hashes = s.map(js => `'sha256-${createHash('sha256').update(js, 'utf8').digest('base64')}'`).join(' ');
-  const csp = `default-src 'none'; script-src ${hashes}; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'`;
+  const csp = `default-src 'none'; script-src ${hashes}; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; worker-src blob:`;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -38,6 +51,16 @@ mkdirSync(join(root, 'dist'), { recursive: true });
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="${desc}">
+<meta name="keywords" content="${keywords}">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="${title}">
+<meta property="og:description" content="${desc}">
+<meta property="og:url" content="https://kaustav1311.github.io/threadlens/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${title}">
+<meta name="twitter:description" content="${desc}">
+<link rel="canonical" href="https://kaustav1311.github.io/threadlens/">
 <title>${title}</title>
 <style>${css}</style>
 </head>
@@ -60,4 +83,12 @@ ${s.map(js => `<script>${js}</script>`).join('\n')}
 `;
   writeFileSync(join(root, 'dist/threadlens-artifact.html'), html);
 }
-console.log('built dist/index.html and dist/threadlens-artifact.html');
+
+// The page has to stay small enough to be worth downloading and running offline.
+const BUDGET_KB = 400;
+const kb = statSync(join(root, 'dist/index.html')).size / 1024;
+console.log(`built dist/index.html (${kb.toFixed(0)} KB) and dist/threadlens-artifact.html`);
+if (kb > BUDGET_KB) {
+  console.error(`dist/index.html is ${kb.toFixed(0)} KB, over the ${BUDGET_KB} KB budget.`);
+  process.exit(1);
+}

@@ -14,7 +14,7 @@ dependencies = []
 
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
-deep = ["detoxify>=0.5", "transformers>=4.40", "torch"]
+deep = ["detoxify>=0.5", "transformers>=4.40", "torch", "sentencepiece"]  # sentencepiece: the NLI model is deberta-v3
 dev = ["pytest>=8", "httpx>=0.27", "fastapi>=0.110", "python-multipart>=0.0.9"]
 
 [project.scripts]

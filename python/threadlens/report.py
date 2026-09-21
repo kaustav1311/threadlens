@@ -94,7 +94,7 @@ def rigor_findings(res):
         if p["questions_put_to_them"] >= 3 and missed >= 2:
             out.append(f"{missed} of the {p['questions_put_to_them']} direct questions put to {p['name']} "
                        f"were never engaged with in the following {RIGOR_ANSWER_WINDOW} messages.")
-        if p["claims"] >= 4 and p["vague_claims"] / p["claims"] >= 0.6:
+        if p["claims"] >= 5 and p["vague_claims"] / p["claims"] >= 0.7:
             out.append(f"{p['vague_claims']} of {p['name']}'s {p['claims']} factual claims carry no link, "
                        "date, number or named source.")
         if p["goalposts"]:
@@ -187,6 +187,14 @@ def to_markdown(res, lens, deep=None):
         md += ["", "## Deep models (local)", "", "| Measure | " + " | ".join(names) + " |", "|---|" + "|".join("---" for _ in names) + "|"]
         for key in deep["columns"]:
             md.append(f"| {key} | " + " | ".join(str(deep["per_person"].get(n, {}).get(key, "—")) for n in names) + " |")
+        if deep.get("contradictions"):
+            md += ["", "### Possible self-contradictions", "",
+                   "A local NLI model flagged these pairs of claims by the same person. Both quotes are shown "
+                   "because the model is often wrong; nothing here says either claim is false.", ""]
+            for x in deep["contradictions"][:10]:
+                md += [f"- **{x['who']}** ({x['probability']:.2f})",
+                       f"  - {_d(x['first']['date'])}: {x['first']['text']}",
+                       f"  - {_d(x['second']['date'])}: {x['second']['text']}"]
         md += ["", "_" + deep["note"] + "_"]
     md += ["", "---", "Generated locally by Threadlens. Word-list heuristics, not a diagnosis."]
     return "\n".join(md) + "\n"

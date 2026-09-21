@@ -19,13 +19,15 @@
   }
 
   /** Split raw export text into header matches + continuation lines. */
-  function tokenizeLines(text) {
+  function tokenizeLines(text, onProgress) {
     const lines = text.split(/\n/).map(cleanLine);
     const out = [];
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const m = line.match(IOS) || line.match(ANDROID);
       if (m) out.push({ head: m, rest: m[8] });
       else if (out.length) out[out.length - 1].rest += '\n' + line;
+      if (onProgress && (i & 4095) === 4095) onProgress(i / lines.length);
     }
     return out;
   }
@@ -61,11 +63,11 @@
   /**
    * Parse a WhatsApp export (Android or iOS, 12h or 24h, any locale separator).
    * @param {string} text
-   * @param {{dateOrder?: 'auto'|'DMY'|'MDY'|'YMD'}} [opts]
+   * @param {{dateOrder?: 'auto'|'DMY'|'MDY'|'YMD', onProgress?: (fraction:number)=>void}} [opts]
    */
   function parseChat(text, opts) {
     opts = opts || {};
-    const rows = tokenizeLines(String(text || ''));
+    const rows = tokenizeLines(String(text || ''), opts.onProgress);
     const order = !opts.dateOrder || opts.dateOrder === 'auto' ? detectDateOrder(rows.map(r => r.head)) : opts.dateOrder;
     const messages = [];
     let system = 0;
@@ -109,6 +111,12 @@
   function countList(c, tokens, lower) {
     let n = 0;
     if (c.words.size) for (const t of tokens) if (c.words.has(t)) n++;
+    return n + countPhrases(c, lower);
+  }
+
+  /** The phrase/emoji half of countList, split out so the word half can be indexed. */
+  function countPhrases(c, lower) {
+    let n = 0;
     for (const re of c.phrases) { re.lastIndex = 0; const m = lower.match(re); if (m) n += m.length; }
     for (const e of c.emoji) n += lower.split(e).length - 1;
     return n;
@@ -119,10 +127,11 @@
   /* -------------------------------------------------------------- sentiment */
 
   const NEGATORS = new Set(['not', 'no', 'never', 'nahi', 'nahin', 'na', "don't", 'dont', "isn't", 'isnt', "wasn't", "can't", 'cant', "won't", 'without']);
+  /** @param {Map<string, number>} vader */
   function sentiment(tokens, vader) {
     let s = 0;
     for (let i = 0; i < tokens.length; i++) {
-      let v = vader[tokens[i]];
+      let v = vader.get(tokens[i]);
       if (v === undefined) continue;
       for (let j = Math.max(0, i - 3); j < i; j++) if (NEGATORS.has(tokens[j])) { v *= -0.74; break; }
       s += v;
@@ -162,12 +171,37 @@
       selfCorrection: compileList(rg.self_correction, true),
     };
 
+    // One pass over a message's tokens instead of one pass per word list.
+    // A token that appears in several lists still increments each of them, so
+    // every count is unchanged -- this is purely a loop order change.
+    const index = (lists) => {
+      const words = new Map(), withPhrases = [];
+      for (const k of Object.keys(lists)) {
+        for (const w of lists[k].words) {
+          let a = words.get(w);
+          if (!a) words.set(w, a = []);
+          a.push(k);
+        }
+        if (lists[k].phrases.length || lists[k].emoji.length) withPhrases.push(k);
+      }
+      return { words, withPhrases, keys: Object.keys(lists) };
+    };
+    const LX = index(L), MX = index(MORAL);
+    const VADER = new Map(Object.keys(vader).map(k => [k, vader[k]]));
+
+    const tally = (X, lists, tokens, lower) => {
+      const out = {};
+      for (const k of X.keys) out[k] = 0;
+      for (const t of tokens) { const a = X.words.get(t); if (a) for (const k of a) out[k]++; }
+      for (const k of X.withPhrases) out[k] += countPhrases(lists[k], lower);
+      return out;
+    };
+
     function scoreMessage(m) {
       const lower = m.text.toLowerCase();
       const tokens = tokenize(lower);
-      const c = {};
-      for (const k of Object.keys(L)) c[k] = countList(L[k], tokens, lower);
-      const moral = {}; for (const k of Object.keys(MORAL)) moral[k] = countList(MORAL[k], tokens, lower);
+      const c = tally(LX, L, tokens, lower);
+      const moral = tally(MX, MORAL, tokens, lower);
       const rhet = {}; for (const k of Object.keys(RHET)) rhet[k] = countList(RHET[k], tokens, lower);
       const capsWords = (m.text.match(/\b[A-Z]{3,}\b/g) || []).length;
       const questions = (m.text.match(/\?/g) || []).length > 0 ? 1 : 0;
@@ -175,13 +209,13 @@
       const raw = c.profanity * 1 + c.insult * 1 + c.political_label * 0.6 + c.status_hierarchy * 0.4 +
         rhet.personal_attack * 1.2 + c.mock * 0.3 + (tokens.length > 3 && capsWords / tokens.length > 0.5 ? 0.5 : 0);
       const heat = raw ? 1 - Math.exp(-raw * 3 / Math.sqrt(Math.max(tokens.length, 6))) : 0;
-      return { words: tokens.length, c, moral, rhet, capsWords, questions, heat, sent: sentiment(tokens, vader) };
+      return { words: tokens.length, c, moral, rhet, capsWords, questions, heat, sent: sentiment(tokens, VADER) };
     }
 
     /**
      * Analyse parsed messages.
      * @param {{messages: Array}} parsed
-     * @param {{anonymise?: boolean, maxPeople?: number}} [opts]
+     * @param {{anonymise?: boolean, maxPeople?: number, onProgress?: (fraction:number)=>void}} [opts]
      */
     function analyse(parsed, opts) {
       opts = opts || {};
@@ -209,7 +243,9 @@
       const byDay = {};
       let prev = null;
       const scored = [];
+      let done = 0;
       for (const m of msgs) {
+        if (opts.onProgress && (++done & 2047) === 2047) opts.onProgress(done / msgs.length);
         const who = label(m.author);
         const p = P[who];
         p.messages++;
@@ -291,14 +327,20 @@
       const hottest = scored.filter(s => s.heat >= 0.5).sort((a, b) => b.heat - a.heat).slice(0, 6)
         .map(s => ({ who: s.who, date: s.date, heat: s.heat, text: s.text.slice(0, 240) }));
 
-      const rigor = rigorAnalysis(scored, people, R);
-
-      return {
-        people, stats, series, hottest, others, rigor,
+      const result = {
+        people, stats, series, hottest, others,
         range: { from: msgs[0].date, to: msgs[msgs.length - 1].date, days: days.length },
         totals: { messages: msgs.length, words: stats.reduce((a, s) => a + s.words, 0) },
         dateOrder: parsed.dateOrder,
       };
+      // Rigor is the most expensive pass and only one lens needs it, so it is
+      // computed on first access and cached. Four of the five lenses never pay for it.
+      let rigorCache = null;
+      Object.defineProperty(result, 'rigor', {
+        enumerable: true,
+        get() { return rigorCache || (rigorCache = rigorAnalysis(scored, people, R)); },
+      });
+      return result;
     }
 
     return { analyse, scoreMessage, rigor: (scored, people) => rigorAnalysis(scored, people, R) };
@@ -334,6 +376,9 @@
   const RIGOR_OVERLAP = 2;         // shared content words needed to link a reply to a claim
   const TOPIC_OPENING_MSGS = 10;
   const TOPIC_TERMS = 12;
+  const LEDGER_MAX = 500;         // rendered claims; scoring still uses every claim
+  const UNANSWERED_MAX = 200;
+  const DRIFT_POINTS = 400;       // the timeline is downsampled to this many points
   const TOPIC_FULL_MATCH = 0.25;   // matching 25% of the opening topic's weight counts as fully on-topic
   const DRIFT_HIGH = 0.8;
   const DRIFT_JUMP = 0.3;
@@ -348,7 +393,9 @@
     '\\b\\d{1,2}(?:st|nd|rd|th)?\\s+' + MONTH + '\\b' +
     '|\\b' + MONTH + '\\.?\\s+\\d{1,2}\\b' +
     '|\\b\\d{1,2}[\\/.-]\\d{1,2}[\\/.-]\\d{2,4}\\b', 'i');
-  const RE_STAT = /\b\d+(?:[.,]\d+)?\s*(?:%|percent|per cent|crore|lakh|lakhs|million|billion|km|kg|tonnes?|rs\.?|inr|usd)\b|[₹$£€]\s?\d|\b\d{2,}\b/i;
+  // `%` is not a word character, so a trailing \b after it never matches:
+  //  \d+\s*%\b fails on 6% a year. Keep  for the spelled-out units only.
+  const RE_STAT = /\b\d+(?:[.,]\d+)?\s*%|\b\d+(?:[.,]\d+)?\s*(?:percent|per cent|crore|lakh|lakhs|million|billion|km|kg|tonnes?|rs\.?|inr|usd)\b|[₹$£€]\s?\d|\b\d{2,}\b/i;
   const RE_PROPER = /^[A-Z][a-z]{2,}/;
 
   function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
@@ -386,14 +433,21 @@
 
   function overlapCount(a, b) { let n = 0; for (const t of a) if (b.has(t)) n++; return n; }
 
+  /** Keep at most `max` evenly spaced points: a 50k-point timeline renders no better than 400. */
+  function downsample(arr, max) {
+    if (arr.length <= max) return arr;
+    const step = arr.length / max, out = [];
+    for (let i = 0; i < max; i++) out.push(arr[Math.floor(i * step)]);
+    return out;
+  }
+
   /**
    * How much of a question's distinctive vocabulary a reply echoes, 0..1.
    * Weighted by IDF so echoing "shopkeepers" counts far more than echoing "think":
    * a flat word count made every short reply look like a non-answer.
    */
-  function echoScore(qkw, replyWords, idf) {
+  function echoScore(qkw, have, idf) {
     let total = 0, hit = 0;
-    const have = new Set(replyWords);
     for (const t of qkw) { const w = idf(t); total += w; if (have.has(t)) hit += w; }
     return total ? hit / total : 0;
   }
@@ -417,6 +471,9 @@
       for (const t of new Set(w)) df[t] = (df[t] || 0) + 1;
       return w;
     });
+    // One Set per message, built once. The responsiveness and challenge scans below
+    // both look up the same messages repeatedly; rebuilding these was the hot path.
+    const contentSets = perMsgWords.map(w => new Set(w));
     const N = Math.max(msgs.length, 1);
     const idf = t => Math.log(1 + N / (1 + (df[t] || 0)));
     const tf = Object.create(null);
@@ -490,7 +547,7 @@
       for (let j = q.i + 1; j <= Math.min(msgs.length - 1, q.i + RIGOR_ANSWER_WINDOW); j++) {
         const m = msgs[j];
         if (m.who === q.who || !P[m.who]) continue;
-        if (echoScore(q.kw, contentWords(toks[j], stop), idf) >= RIGOR_ANSWER_SIM) {
+        if (echoScore(q.kw, contentSets[j], idf) >= RIGOR_ANSWER_SIM) {
           P[m.who].answered++;
           q.answered = true;
           break;
@@ -504,7 +561,7 @@
         const m = msgs[j];
         if (m.who === c.who) continue;
         const isChallenge = (m.rhet.evidence_request || 0) > 0 || m.text.indexOf('?') >= 0;
-        if (isChallenge && overlapCount(c.kw, new Set(contentWords(toks[j], stop))) >= RIGOR_OVERLAP) { c.challenged = true; c.challengedAt = j; break; }
+        if (isChallenge && overlapCount(c.kw, contentSets[j]) >= RIGOR_OVERLAP) { c.challenged = true; c.challengedAt = j; break; }
       }
       if (!c.challenged) continue;
       for (let j = c.challengedAt + 1; j <= Math.min(msgs.length - 1, c.challengedAt + RIGOR_ANSWER_WINDOW) && !c.answered; j++) {
@@ -565,9 +622,11 @@
       people: out,
       weights: RIGOR_WEIGHTS,
       topicTerms: topic.map(x => x.t),
-      ledger: ledger.map(c => ({ who: c.who, date: c.date, text: c.text.slice(0, 240), status: c.status, checkable: c.checkable, challenged: c.challenged, answered: c.answered })),
-      unanswered: questions.filter(q => !q.answered).map(q => ({ who: q.who, date: q.date, text: q.text.slice(0, 240) })),
-      drift: msgs.map((m, i) => ({ who: m.who, date: m.date, drift: drift[i] })),
+      ledgerTotal: ledger.length,
+      ledger: ledger.slice(0, LEDGER_MAX).map(c => ({ who: c.who, date: c.date, text: c.text.slice(0, 240), status: c.status, checkable: c.checkable, challenged: c.challenged, answered: c.answered })),
+      unansweredTotal: questions.reduce((n, q) => n + (q.answered ? 0 : 1), 0),
+      unanswered: questions.filter(q => !q.answered).slice(0, UNANSWERED_MAX).map(q => ({ who: q.who, date: q.date, text: q.text.slice(0, 240) })),
+      drift: downsample(msgs.map((m, i) => ({ who: m.who, date: m.date, drift: drift[i] })), DRIFT_POINTS),
     };
   }
 
@@ -662,7 +721,7 @@
           text: missed + ' of the ' + p.questionsPutToThem + ' direct questions put to ' + p.name +
             ' were never engaged with in the following ' + RIGOR_ANSWER_WINDOW + ' messages.',
         });
-      if (p.claims >= 4 && p.vagueClaims / p.claims >= 0.6)
+      if (p.claims >= 5 && p.vagueClaims / p.claims >= 0.7)
         out.push({
           kind: 'pattern',
           short: p.name + "'s claims are mostly unsourced",

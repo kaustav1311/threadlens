@@ -8,3 +8,6 @@ __pycache__/
 chats/
 private/
 !samples/*.txt
+
+# local preview config, not part of the project
+.claude/

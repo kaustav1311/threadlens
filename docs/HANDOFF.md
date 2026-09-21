@@ -83,3 +83,37 @@ The current page is text-heavy. Target: someone understands the result in five s
 3. Tag `v0.2.0`, write release notes, and attach `dist/index.html` as a downloadable offline build.
 4. Optional API: deploy the Docker image to Fly.io, Render or Cloud Run with HTTPS, and keep the default rate limits.
 5. Update README screenshots (`docs/screenshot.png`), mobile + desktop, light + dark.
+
+---
+
+## Status
+
+**Workstreams 1 and 2 are done and on `main`; workstream 3 is done apart from the optional API deploy.**
+
+Shipped in v0.2.0:
+
+- **Rigor mode** — the fifth lens, seven weighted components, claim ledger, unanswered questions, drift
+  timeline, per-number "how was this computed" popovers, `--lens rigor` and `--ledger out.json` in the CLI,
+  and local NLI self-contradiction detection under the `[deep]` extra.
+- **Neutrality guardrails** — `political_label` retagged by who uses a label and balanced to a 10.8% skew,
+  party/leader/policy names banned from every list by test, and the mirrored sample pair asserting that
+  swapping sides swaps the scores. They currently swap exactly.
+- **JS ↔ Python parity** — `scripts/rigor-dump.mjs` plus `test_rigor.py::test_matches_javascript` compare the
+  two implementations field by field on every sample, so parity is enforced rather than assumed.
+- **UI refresh** — scorecards per person, findings as short cards that expand, the measures table collapsed to
+  the five widest gaps with the rest in a drawer, the info sections reduced to accordions, CSS-only animations
+  (drop-zone pulse, file-card fly-in, real progress bar, count-up, chart draw-in, sliding lens pill), and a
+  deep-linkable lens (`#rigor`).
+- **Performance** — an inverted word index in `scoreMessage`, a lazy `res.rigor`, a Web Worker for exports over
+  400k characters, and a build that fails over 400 KB.
+
+### Known gaps
+
+- **50k-message budget.** The default lenses analyse 50k messages in ~1.1 s, inside the 2 s target. Opening the
+  Rigor lens on a chat that size costs a further ~1.3 s, so the worst case is ~2.4 s rather than under 2 s. It
+  runs in a Web Worker, so the page stays responsive throughout and shows real progress, but the raw number
+  misses. Closing the gap means optimising `scoreMessage` further, not the rigor pass.
+- **Mobile screenshot.** `docs/` has light and dark desktop captures. The headless capture clips at phone
+  widths; the 375px layout itself is verified to have no horizontal overflow.
+- **Optional API deploy** (Fly.io / Render / Cloud Run) is still not done. The Docker image builds and the
+  self-hosted API works locally.

@@ -8,36 +8,61 @@ The Python package mirrors the same scoring for the CLI, a self-hosted API, and 
 ```
             ┌──────────────── lexicons/*.json (single source of truth for word lists) ────────────────┐
             │                                                                                        │
- web/src/core.js  (parse → score → findings → markdown; UMD, no deps, runs in browser + Node)        │
- web/src/app.js   (UI: file/zip/docx/paste → core → render panels/SVG charts)                        │
+ web/src/core.js  (parse → score → findings → rigor → markdown; UMD, browser + Node, no deps)        │
+ web/src/app.js   (UI: file/zip/docx/paste → core → scorecards, panels, SVG charts, Web Worker)      │
  web/src/body.html + style.css                                                                       │
  web/vendor/jszip.min.js                                                                             │
         │                                                                                            │
  scripts/build.mjs ──► dist/index.html             full page, CSP: connect-src 'none', script hashes │
                   └──► dist/threadlens-artifact.html  body fragment for artifact hosts (no downloads) │
+ scripts/rigor-dump.mjs  emits the JS rigor result so pytest can diff it against Python              │
                                                                                                      │
  python/threadlens/  parser.py · metrics.py · report.py (mirror core.js) ◄── data/*.json (make sync) ┘
-                     deep.py   (Detoxify + fallacy classifiers, local, optional extra [deep])
-                     cli.py    (`threadlens analyse|serve`)
+                     rigor.py  (mirrors the rigor section of core.js, constant for constant)
+                     deep.py   (Detoxify + fallacy classifier + local NLI self-contradiction, [deep])
+                     cli.py    (`threadlens analyse|serve`, `--lens rigor`, `--ledger out.json`)
                      server.py (FastAPI, in-memory per-IP rate limits, 10 MB cap, no disk, no body logs)
 ```
 Data flow: export text → `parseChat` (Android/iOS, 12/24h, date-order detection) → messages → `analyse` (per-person
 counts, per-100-word rates, heat, sentiment, moral words, rhetoric regexes, reply times, day series) → `findings(lens)`
 (symmetric comparisons, off below 150 words/person) → UI or Markdown/JSON.
 
+`res.rigor` is a **lazy getter**: it is the most expensive pass and only one lens needs it, so four of the five
+lenses never pay for it. Touching `res.rigor` computes it once and caches it.
+
+Large exports (≥400k characters) are analysed in a **Web Worker** built from a Blob of `core.js`, which is why the
+CSP allows `worker-src blob:`. `window.TL_CORE_SRC` is that same file inlined as a string. If workers are blocked
+the page falls back to the main thread and the result is identical.
+
 ## Commands
-- `make test`: JS tests (`node --test "web/test/*.test.js"`) + Python tests (`cd python && pytest`)
+- `make test`: builds, then JS tests (`node --test "web/test/*.test.js"`) + Python tests (`cd python && pytest`)
 - `make build`: dist files. Rebuild before committing UI changes; dist is committed so the page works offline.
+  The build **fails** if `dist/index.html` exceeds 400 KB.
 - `make sync`: copy lexicons into python/threadlens/data (a test fails if they drift)
 - `threadlens serve`: API at http://127.0.0.1:8000/docs
 
 ## Invariants (do not break)
-1. **No network from the web app.** Nothing in web/src may fetch, load fonts or use a CDN. The CSP in build.mjs must keep `connect-src 'none'`.
+1. **No network from the web app.** Nothing in web/src may fetch, load fonts or use a CDN. The CSP in build.mjs must
+   keep `connect-src 'none'`. `web/test/build.test.js` asserts this against the built page — including no `fetch`,
+   no `sendBeacon`, no remote `<link>` or `<script>`, and hash-pinned inline scripts only.
 2. **Symmetry.** Every metric is computed identically for every participant. Findings name both sides and the size of the gap.
-3. **No diagnosis, no ideology.** Never output personality, IQ or mental-health labels. Political word lists must cover labels from *all* sides equally, and no score may reward or penalise a political position, only argumentative conduct.
-4. **JS ↔ Python parity.** Same thresholds and formulas in core.js and metrics.py. Extend the tests when you add a metric.
+3. **No diagnosis, no ideology.** Never output personality, IQ or mental-health labels. `political_label` is tagged by
+   *who typically uses* a label (not who it targets, because that is what decides which side the metric leans against),
+   and `left_coded` / `right_coded` must stay within 20% of each other in count. No party, leader or policy name may
+   appear in any scoring list. Both suites enforce both rules, and the mirrored samples must swap their scores.
+4. **JS ↔ Python parity.** Same thresholds and formulas in core.js, metrics.py and rigor.py. `test_rigor.py::
+   test_matches_javascript` shells out to `scripts/rigor-dump.mjs` and compares the two field by field on every sample.
+   (Loop-order optimisations that cannot change a count, like the inverted word index in `scoreMessage`, are fine.)
 5. **No real chats** in the repo, issues or fixtures. Only synthetic samples in samples/.
-6. `prefers-reduced-motion` must disable all animation.
+6. `prefers-reduced-motion` must disable all animation — and every animated element must still land on its final
+   state, not sit at zero. Asserted in `web/test/build.test.js`.
+
+## Gotchas already paid for
+- A class with `display` beats the UA's `[hidden] { display: none }`. style.css carries a global `[hidden]` rule;
+  without it `el.hidden = true` silently does nothing on `.progress` and friends.
+- `%` is not a word character, so `\d+\s*%\b` never matches "6% a year". Percent gets its own regex branch.
+- `/\b(jan|feb|mar|…)[a-z]*\b/` matches "market" and "maybe". Dates must look like dates.
+- Answer matching by raw shared-word count returns 0 for almost every real chat reply; overlap is IDF-weighted.
 
 ## Deployment
 - **Web:** push to `main` → `.github/workflows/pages.yml` runs tests, builds, and deploys `dist/index.html` to GitHub Pages
@@ -45,6 +70,16 @@ counts, per-100-word rates, heat, sentiment, moral words, rhetoric regexes, repl
 - **API (optional):** `docker build -t threadlens . && docker run -p 8000:8000 -e THREADLENS_RATE_PER_MIN=5 threadlens`,
   behind HTTPS (Caddy, Fly.io, Render or Cloud Run). Set `THREADLENS_TRUST_PROXY=1` only behind your own proxy.
 - **Artifact copy:** dist/threadlens-artifact.html can be re-published to claude.ai from a Cowork session.
+
+## Visitor counting (deliberately absent)
+There is no analytics, and adding any beacon — including privacy-friendly ones like Cloudflare Web Analytics —
+would break invariant 1 and make the page's own "no tracking, no cookies" claim false. If numbers are ever wanted:
+
+- **Owner-side, zero client code:** GitHub → Insights → Traffic gives repo views and clones for free.
+- **Server-side, zero client code:** serve the site through a CDN that reports from its own edge logs
+  (Cloudflare zone analytics on a custom domain). The page stays sealed; the host does the counting.
+- **Never:** a script in `dist/index.html`. If that is ever wanted anyway, the privacy copy in `body.html` and the
+  CSP in `build.mjs` must change in the same commit, and `web/test/build.test.js` will fail until they do.
 
 ## Next work
 See docs/HANDOFF.md.
