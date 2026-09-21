@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "threadlens"
 version = "0.1.0"
 description = "Private, local analysis of WhatsApp chat exports: questions vs assertions, heat, evidence, rhythm."
-readme = "../README.md"
+readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 authors = [{ name = "Kaustav Mallick" }]
