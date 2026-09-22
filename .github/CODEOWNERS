@@ -1,0 +1,8 @@
+# Every change to the scoring model, the word lists or the security posture
+# needs the maintainer on it.
+*                       @kaustav1311
+/lexicons/              @kaustav1311
+/web/src/core.js        @kaustav1311
+/python/threadlens/     @kaustav1311
+/.github/workflows/     @kaustav1311
+SECURITY.md             @kaustav1311

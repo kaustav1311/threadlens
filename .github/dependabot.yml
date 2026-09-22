@@ -1,0 +1,14 @@
+# The browser build has no runtime dependencies and JSZip is vendored, so the only
+# moving parts worth watching are the pinned GitHub Actions and the optional Python
+# extras. Actions are pinned to commit SHAs; Dependabot bumps the SHA and the
+# version comment together, which is the whole point of pinning.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 3
+  - package-ecosystem: pip
+    directory: /python
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 3

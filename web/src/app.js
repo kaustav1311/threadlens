@@ -130,6 +130,7 @@
         if (d.type === 'init') { A = ThreadlensCore.createAnalyzer(d.lex, d.vader); self.postMessage({ type: 'ready' }); return; }
         var post = function (phase, pct) { self.postMessage({ type: 'progress', phase: phase, pct: pct }); };
         var parsed = ThreadlensCore.parseChat(d.text, { dateOrder: d.dateOrder, onProgress: function (p) { post('Reading messages', p * 0.35); } });
+        if (!parsed.messages.length) throw new Error('UNPARSEABLE:' + (parsed.lineCount || 0) + ':' + (parsed.firstLine || ''));
         if (parsed.messages.length > d.maxMessages) throw new Error('This chat has ' + parsed.messages.length.toLocaleString() + ' messages and the limit is ' + d.maxMessages.toLocaleString() + '. Trim the export and try again.');
         var res = A.analyse(parsed, { anonymise: d.anonymise, onProgress: function (p) { post('Scoring every message', 0.35 + p * 0.5); } });
         post('Weighing the argument', 0.88);
@@ -164,7 +165,10 @@
         const d = ev.data;
         if (d.type === 'progress') return setProgress(d.pct, d.phase);
         w.removeEventListener('message', onMsg);
-        if (d.type === 'error') reject(new Error(d.message));
+        if (d.type === 'error') {
+          const u = /^UNPARSEABLE:(\d+):([\s\S]*)$/.exec(d.message);
+          reject(u ? unparseableError(+u[1], u[2]) : new Error(d.message));
+        }
         else resolve(d.res);
       };
       w.addEventListener('message', onMsg);
@@ -172,9 +176,31 @@
     });
   }
 
+  /**
+   * "No messages found" is useless on its own. Nearly every failed paste is one of
+   * two things: text copied out of the WhatsApp window (which carries no
+   * timestamps) or a screenshot's worth of prose. Say which, and show the shape
+   * of a line that would work.
+   */
+  function unparseableError(n, first) {
+    const example = '21/09/2026, 01:02 - Ravi: message text';
+    if (!n) return new Error('There was nothing to read — the box was empty.');
+    return new Error(
+      `Read ${n} line${n === 1 ? '' : 's'}, but none of them look like a WhatsApp export. ` +
+      (first ? `The first line reads: “${first.trim()}”. ` : '') +
+      `An exported line looks like: ${example} — with the date and time at the front. ` +
+      'Selecting messages inside WhatsApp and copying them does not include timestamps; ' +
+      'use the chat menu → More → Export chat → Without media instead.');
+  }
+
+  function assertParsed(parsed) {
+    if (parsed.messages.length) return parsed;
+    throw unparseableError(parsed.lineCount || 0, parsed.firstLine || '');
+  }
+
   function analyseHere(text) {
     setProgress(0.05, 'Reading messages');
-    const parsed = core.parseChat(text, { dateOrder: $('#order').value });
+    const parsed = assertParsed(core.parseChat(text, { dateOrder: $('#order').value }));
     if (parsed.messages.length > MAX_MESSAGES) throw new Error(`This chat has ${parsed.messages.length.toLocaleString()} messages and the limit is ${MAX_MESSAGES.toLocaleString()}. Trim the export and try again.`);
     setProgress(0.6, 'Scoring every message');
     return analyzer.analyse(parsed, { anonymise: $('#anon').checked });

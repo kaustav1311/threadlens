@@ -8,7 +8,9 @@
   /* ---------------------------------------------------------------- parsing */
 
   const INVISIBLE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
-  const ANDROID = /^(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?\s*[-–]\s(.*)$/;
+  // The separator may be a hyphen, en dash or em dash, and the space after it is
+  // optional: some exports and re-exports write 01:02 -Ravi: or 01:02-Ravi:.
+  const ANDROID = /^(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?\s*[-–—]\s*(.*)$/;
   const IOS = /^\[(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?\]\s?(.*)$/;
   const MEDIA = /^(<media omitted>|<attached:.*>|(image|video|audio|sticker|gif|document|contact card) omitted|null)$/i;
   const DELETED = /^(this message was deleted|you deleted this message|message deleted)$/i;
@@ -22,13 +24,20 @@
   function tokenizeLines(text, onProgress) {
     const lines = text.split(/\n/).map(cleanLine);
     const out = [];
+    let seen = 0, first = '';
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const m = line.match(IOS) || line.match(ANDROID);
+      // Match on a left-trimmed copy: pasted text almost always picks up an
+      // indent somewhere, and a single leading space used to drop the line.
+      const probe = line.replace(/^\s+/, '');
+      if (probe) { seen++; if (!first) first = probe.slice(0, 120); }
+      const m = probe.match(IOS) || probe.match(ANDROID);
       if (m) out.push({ head: m, rest: m[8] });
       else if (out.length) out[out.length - 1].rest += '\n' + line;
       if (onProgress && (i & 4095) === 4095) onProgress(i / lines.length);
     }
+    out.lineCount = seen;
+    out.firstLine = first;
     return out;
   }
 
@@ -84,7 +93,7 @@
       const kind = MEDIA.test(body) ? 'media' : DELETED.test(body) ? 'deleted' : 'text';
       messages.push({ date, author: nameCand.trim(), text: kind === 'text' ? body : '', kind, edited });
     }
-    return { messages, dateOrder: order, systemLines: system };
+    return { messages, dateOrder: order, systemLines: system, lineCount: rows.lineCount || 0, firstLine: rows.firstLine || '' };
   }
 
   /* -------------------------------------------------------------- lexicons */

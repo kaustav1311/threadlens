@@ -9,7 +9,8 @@ from datetime import datetime
 
 INVISIBLE = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 _DT = r"(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?"
-ANDROID = re.compile(r"^" + _DT + r"\s*[-–]\s(.*)$")
+# Hyphen, en dash or em dash, and the space after the separator is optional.
+ANDROID = re.compile(r"^" + _DT + r"\s*[-–—]\s*(.*)$")
 IOS = re.compile(r"^\[" + _DT + r"\]\s?(.*)$")
 MEDIA = re.compile(r"^(<media omitted>|<attached:.*>|(image|video|audio|sticker|gif|document|contact card) omitted|null)$", re.I)
 DELETED = re.compile(r"^(this message was deleted|you deleted this message|message deleted)$", re.I)
