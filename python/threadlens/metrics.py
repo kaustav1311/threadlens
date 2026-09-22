@@ -183,5 +183,8 @@ class Analyzer:
             "range": {"from": msgs[0].date.isoformat(), "to": msgs[-1].date.isoformat(), "days": len(by_day)},
             "totals": {"messages": len(msgs), "words": sum(s["words"] for s in stats)},
             "date_order": parsed["date_order"],
+            # The source carried no timestamps, so `range`, `series`, `hours` and every
+            # reply-time number are artefacts of a synthetic timeline. Hide them.
+            "undated": bool(parsed.get("undated")),
             "_scored": scored,
         }

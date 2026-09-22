@@ -187,9 +187,31 @@ p { margin: 0; }
 .hero h1 { font-family: var(--font-serif); font-size: var(--text-hero); line-height: var(--leading-tight); letter-spacing: var(--track-hero); font-weight: var(--weight-bold); }
 .hero h1 em { font-style: normal; background: var(--accent); color: var(--accent-ink); padding: 0 .12em; }
 .hero .lede { margin-top: var(--space-4); font-size: var(--text-md); line-height: var(--leading-body); color: var(--ink-2); max-width: var(--measure-narrow); text-wrap: pretty; }
+.hero .eyebrow { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: var(--space-3); }
+.hero .sources { margin-top: var(--space-4); font-size: var(--text-sm); color: var(--ink-3); max-width: var(--measure-narrow); text-wrap: pretty; }
+.hero .sources b { color: var(--ink-2); font-weight: var(--weight-medium); }
+
+/* The headline rotates through the questions the report actually answers. No dots
+   and no arrows: the only affordances are waiting, and dragging sideways. Each
+   slide is absolutely positioned over the first, so the block cannot reflow as the
+   questions change length -- `min-height` comes from the tallest, measured in JS. */
+.rotator { position: relative; }
+.rotator .rot-line { display: block; }
+.rotator.is-live .rot-line { position: absolute; inset: 0 auto auto 0; width: 100%; opacity: 0; transform: translateX(var(--slide-from, 1.5rem)); transition: opacity .42s var(--ease), transform .42s var(--ease); pointer-events: none; }
+.rotator.is-live .rot-line.is-on { position: relative; opacity: 1; transform: none; pointer-events: auto; }
+.rotator.is-live .rot-line.is-out { opacity: 0; transform: translateX(calc(var(--slide-from, 1.5rem) * -1)); }
+/* Dragging sideways changes the question, so the pointer should say so. */
+.rotator.is-live { cursor: grab; touch-action: pan-y; user-select: none; }
+.rotator.is-live.is-held { cursor: grabbing; }
+/* A hairline that fills over the dwell time. It is the only progress indicator, and
+   it is decoration -- the carousel is fully usable without noticing it. */
+.rot-tick { display: block; height: 2px; width: 100%; max-width: var(--measure-narrow); margin-top: var(--space-4); background: var(--line); overflow: hidden; }
+.rot-tick i { display: block; height: 100%; width: 100%; background: var(--accent); transform-origin: left center; transform: scaleX(var(--p, 0)); }
 /* Out of the hero and across the full width: inside it they made the left
    column 460px taller than the drop card and left a hole beside it. */
-.chips { margin: 0 auto; padding: 0 var(--space-5) var(--space-6); list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-5); }
+/* Five selling points, not three, so a fixed 3-up grid would leave an orphan row.
+   auto-fit packs as many as the width allows and the last row fills the space. */
+.chips { margin: 0 auto; padding: 0 var(--space-5) var(--space-6); list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: var(--space-5); }
 .chips li { display: grid; grid-template-columns: auto 1fr; gap: var(--space-3); align-items: baseline; font-size: var(--text-sm); color: var(--ink-2); border-top: var(--rule) solid var(--ink); padding-top: var(--space-3); max-width: 42ch; }
 .chips b { color: var(--ink); font-weight: var(--weight-semi); }
 .chips .ic { font-family: var(--font-mono); color: var(--accent); font-size: var(--text-xs); font-weight: var(--weight-bold); flex: none; }
@@ -466,6 +488,11 @@ footer { margin-top: var(--space-7); border-top: var(--rule) solid var(--ink); p
   .brow .track i, .bar i { transform: scaleX(var(--w, 0)); }
   .chart path.line { stroke-dashoffset: 0; }
   .statusline .caret { animation: none !important; opacity: 1; }
+  /* The headline carousel stops rotating on its own (app.js checks the same query)
+     and every slide lands on its final state rather than sitting mid-transition.
+     Dragging still works: that is the reader's own input, not motion done at them. */
+  .rotator.is-live .rot-line.is-on { opacity: 1; transform: none; }
+  .rot-tick { display: none; }
 }
 
 /* Clip bar: narrow a long export to the window that matters, before scoring. */

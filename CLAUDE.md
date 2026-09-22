@@ -16,6 +16,9 @@ The Python package mirrors the same scoring for the CLI, a self-hosted API, and 
  scripts/build.mjs ──► dist/index.html             full page, CSP: connect-src 'none', script hashes │
                   └──► dist/threadlens-artifact.html  body fragment for artifact hosts (no downloads) │
  scripts/rigor-dump.mjs  emits the JS rigor result so pytest can diff it against Python              │
+ scripts/items.mjs   the units the eval gold set is labelled over — labeller and harness share it    │
+ scripts/eval.mjs    `make eval`: P/R/F1 for the claim, question and is-it-an-argument gates         │
+ dev/label.mjs       dev-only: pre-labels a local export with a local ollama model (never committed) │
                                                                                                      │
  python/threadlens/  parser.py · metrics.py · report.py (mirror core.js) ◄── data/*.json (make sync) ┘
                      rigor.py  (mirrors the rigor section of core.js, constant for constant)
@@ -40,6 +43,12 @@ the main thread and the result is identical.
 - `make build`: dist files. Rebuild before committing UI changes; dist is committed so the page works offline.
   The build **fails** if `dist/index.html` exceeds 400 KB.
 - `make sync`: copy lexicons into python/threadlens/data (a test fails if they drift)
+- `make eval`: score the claim / question / is-it-an-argument gates against the hand-labelled
+  `samples/labels_banglish_mixed.json`. **The primary gate for any scoring change** — `make test` proves the
+  two implementations agree, `make eval` proves they are right. `--errors` prints what each gate got wrong.
+  Baselines and the v0.2→v0.3 numbers are in docs/SCORING.md §6a.
+- `node dev/label.mjs <chat.txt>`: dev-only. Pre-labels a local export with a local ollama model to build a
+  gold set. Never run against anything that gets committed; `dev/out/` is gitignored.
 - `threadlens serve`: API at http://127.0.0.1:8000/docs
 
 ## Invariants (do not break)
@@ -59,6 +68,26 @@ the main thread and the result is identical.
    state, not sit at zero. Asserted in `web/test/build.test.js`.
 
 ## Scoring decisions worth not re-litigating
+- **Rigor scores the arguments in a chat, never the whole chat.** Applicability is decided *per episode*:
+  an episode qualifies when people are both asserting (claims/message) and disagreeing (markers/message).
+  Either alone is not an argument — a stream of links is not, nor is a round of swearing. `rigor.applies`
+  is false when nothing qualifies, and then the ledger and the question list are **empty**: there is
+  deliberately no fallback to "score everything anyway", so a caller that ignores `applies` still cannot
+  print a confident analysis of an argument that never happened. This is what took a real chat's ledger
+  from 112 entries of flat-hunting to 103 entries that are all the actual argument.
+- **Three kinds of question, and only one is a debt.** `phatic` (asks for acknowledgement), `rhetorical`
+  (asked to score a point), `substantive` (actually wants an answer). Only substantive questions enter
+  Responsiveness or "questions nobody answered". Counting all three as one was most of what Responsiveness
+  used to measure. `questionMix` reports all three over the whole chat.
+- **A claim is an assertion about the world.** Obligation, plans, advice, requests, interior states
+  ("I feel", "we love"), talk about the conversation itself, and unmarked questions are all rejected —
+  see `rigor.modality`, `.meta_talk`, `.interior`, `.unmarked_question`. Meta-talk is only rejected when
+  the sentence carries nothing checkable: "I said ninety minutes was the ward office figure" names a
+  figure and stays a claim.
+- **Stopwords and factual verbs are per language, and the set is chosen by detection.** An English-only
+  chat is scored exactly as before; a Banglish one also gets `bn_latin`/`hi_latin`. Detection uses each
+  language's *distinctive* words (the ones English does not already claim), because the English list is
+  long and common enough to win on any text otherwise.
 - **Per-100-words normalises a description, never a deduction.** Conduct and Calibration use *incidence* (the
   share of a person's messages carrying the thing). The old per-100-word rule made a terse speaker with one
   insult score worse than a verbose one with five. `test_conduct_counts_messages_not_words` pins it.
@@ -73,6 +102,20 @@ the main thread and the result is identical.
   drift and the ledger are all computed on the clip. A bare `to` date means the whole of that day.
 
 ## Gotchas already paid for
+- **An opener list matched with `indexOf` matches inside words.** `intent_opener` held a bare `"id "` and
+  `"ill "`, so `"sa|id i|t was ninety minutes"` and `"st|ill s|ays"` both matched and any sentence with
+  *said*, *did* or *still* near its start was silently dropped as a statement of intent. Openers are
+  word-boundary anchored (`openerRe` / `_opener_re`) — same class of bug as the month prefix below.
+- **`"the"` was in `factual_verb`.** It is romanised Hindi for "they were", and it shares its spelling with
+  the commonest word in English, so the verb gate passed everything on any English chat. Factual verbs are
+  per-language now and the Hindi past copula is carried by `tha`/`thi`/`thay` instead. Watch for the same
+  trap with any romanised homograph: `sob`, `mane`, `kar`, `par`, `hai`.
+- **A URL's query string contains `?`.** A shared map pin was being counted as a question. Links are
+  stripped before the question test.
+- **The tokeniser splits `it's` into `it` + `s`**, so a copula contraction left the verb gate finding no
+  verb at all. `RE_CONTRACTED_IS` expands them before the check.
+- **Test fixtures built as "one message a day" are now N episodes of one**, and no episode of one is ever
+  an argument, so they produce an empty ledger. Build a fixture as one sitting if it needs to be scored.
 - A class with `display` beats the UA's `[hidden] { display: none }`. style.css carries a global `[hidden]` rule;
   without it `el.hidden = true` silently does nothing on `.progress` and friends.
 - `%` is not a word character, so `\d+\s*%\b` never matches "6% a year". Percent gets its own regex branch.

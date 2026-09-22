@@ -11,3 +11,6 @@ private/
 
 # local preview config, not part of the project
 .claude/
+
+# Local labelling output. Derived from a real chat, so it never gets committed.
+dev/out/

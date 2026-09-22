@@ -36,7 +36,11 @@ METRICS = [
 ]
 MORAL = {"care": "Care / harm", "fairness": "Fairness / justice", "loyalty": "Loyalty / nation", "authority": "Authority / respect", "purity": "Purity / disgust"}
 RHET = {"whataboutism": "Whataboutism", "false_dilemma": "False choice", "exit_or_concession": "Exit or concession",
-        "unfalsifiable": "Unfalsifiable certainty", "evidence_request": "Asks for evidence", "personal_attack": "Personal attack"}
+        "unfalsifiable": "Unfalsifiable certainty", "evidence_request": "Asks for evidence",
+        "personal_attack": "Personal attack",
+        # The only cue here that marks a good move: qualifying a claim rather than
+        # asserting it flat. It sits beside the moves it is the antidote to.
+        "caveat": "Qualifies a claim"}
 
 
 def fmt_mins(m):

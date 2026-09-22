@@ -2,7 +2,9 @@
 (function () {
   'use strict';
   const core = window.ThreadlensCore;
-  const LEX = window.TL_LEX, VADER = window.TL_VADER, SAMPLE = window.TL_SAMPLE;
+  const LEX = window.TL_LEX, SAMPLE = window.TL_SAMPLE;
+  // VADER is inlined in a packed form to keep the page inside its size budget.
+  const VADER = typeof window.TL_VADER === 'string' ? core.unpackVader(window.TL_VADER) : window.TL_VADER;
   const ENV = window.TL_ENV || 'web';
   const analyzer = core.createAnalyzer(LEX, VADER);
 
@@ -204,12 +206,12 @@
   function unparseableError(n, first) {
     if (!n) return new Error('There was nothing to read — the box was empty.');
     return new Error(
-      `Read ${n} line${n === 1 ? '' : 's'}, but none of them carry a timestamp. ` +
+      `Read ${n} line${n === 1 ? '' : 's'}, but could not find a speaker on any of them. ` +
       (first ? `The first line reads: “${first.trim()}”. ` : '') +
-      'Every line needs a clock at the front — any of ' +
-      '“21/09/2026, 01:02 - Ravi: text”, “[01:02, 21/09/2026] Ravi: text” or “[21/09, 01:02] Ravi: text”. ' +
-      'If yours has none, the text was copied from the message bubbles rather than the chat itself: ' +
-      'use the chat menu → More → Export chat → Without media.');
+      'A line needs either a timestamp — “21/09/2026, 01:02 - Ravi: text”, ' +
+      '“[01:02, 21/09/2026] Ravi: text”, “[21/09, 01:02] Ravi: text” — ' +
+      'or at least a name and a colon, “Ravi: text”, which is read in order with no times. ' +
+      'For the full analysis use the chat menu → More → Export chat → Without media.');
   }
 
   function assertParsed(parsed) {
@@ -350,7 +352,8 @@
       + ` --messages ${res.totals.messages}`,
       el('span', { class: 'caret', 'aria-hidden': 'true' })));
 
-    if (!state.isSample) R.append(clipBar(res));
+    // No dates in the source means nothing to clip by.
+    if (!state.isSample && !res.undated) R.append(clipBar(res));
 
     R.append(el('div', { class: 'banner' },
       el('div', { class: 'hrow' },
@@ -360,29 +363,56 @@
         el('span', null, `${res.totals.messages.toLocaleString()} messages`),
         el('span', null, `${res.totals.words.toLocaleString()} words`),
         el('span', null, `${res.people.length} ${res.people.length === 1 ? 'person' : 'people'}`),
-        el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)}`),
-        el('span', null, `${days} active day${days === 1 ? '' : 's'}`),
-        el('span', null, `dates ${res.dateOrder}`))));
+        // An undated transcript has an order but no clock. Saying so once here is
+        // better than printing a date range that was invented a moment ago.
+        res.undated
+          ? el('span', null, 'no timestamps — order only')
+          : el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)}`),
+        res.undated ? null : el('span', null, `${days} active day${days === 1 ? '' : 's'}`),
+        res.undated ? null : el('span', null, `dates ${res.dateOrder}`))));
 
-    R.append(lens === 'rigor' ? rigorCards(res, idx) : scoreCards(res, idx, lens));
+    // A Rigor scorecard for a chat with no argument in it is a number about nothing.
+    const scoreless = lens === 'rigor' && !res.rigor.applies;
+    if (!scoreless) R.append(lens === 'rigor' ? rigorCards(res, idx) : scoreCards(res, idx, lens));
     R.append(findingCards(res, lens));
 
-    if (lens === 'rigor') {
+    if (lens === 'rigor' && !res.rigor.applies) {
+      // Nothing in this chat is an argument. Printing a ledger and a drift chart
+      // anyway is how the lens used to produce a confident analysis of small talk.
+      R.append(el('div', { class: 'knowhow' },
+        el('h4', null, 'There is no argument here to score'),
+        el('p', null, `All ${res.rigor.episodes} conversation${res.rigor.episodes === 1 ? '' : 's'} in this chat read as `
+          + 'small talk, logistics or agreement — nobody is contesting anything at length. Rigor measures how a '
+          + 'disagreement was conducted: sourcing, answering, staying on topic. With no disagreement to measure, '
+          + 'every one of those would be a confident zero about nothing.'),
+        el('p', null, 'The other lenses do apply. Overview and Personal are the ones worth reading for a chat like this.')));
+    } else if (lens === 'rigor') {
       R.append(rigorKnowhow(res));
       R.append(claimLedger(res, idx));
       const g = el('div', { class: 'grid2' });
       g.append(unansweredPanel(res, idx), driftPanel(res, idx));
       R.append(g);
     } else {
-      const grid = el('div', { class: 'grid2' });
-      grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'heat' : 'n'));
-      grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'n' : lens === 'work' ? 'hours' : 'heat'));
-      R.append(grid);
+      // Every chart here has time on its x-axis. On a transcript with no timestamps
+      // they would plot a timeline this page invented, so they are left out entirely
+      // rather than drawn against a fiction.
+      if (!res.undated) {
+        const grid = el('div', { class: 'grid2' });
+        grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'heat' : 'n'));
+        grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'n' : lens === 'work' ? 'hours' : 'heat'));
+        R.append(grid);
+      }
       if (lens === 'debate') {
         const g2 = el('div', { class: 'grid2' });
         g2.append(moralPanel(res, idx), rhetoricPanel(res, idx));
         R.append(g2);
       }
+    }
+    if (res.undated) {
+      R.append(el('p', { class: 'muted' },
+        'This was pasted without timestamps, so it is read in order only. '
+        + 'Reply times, conversation starts, time of day and the daily charts are all left out — '
+        + 'export the chat instead of copying the messages if you want those.'));
     }
 
     R.append(measuresDrawer(res, lens, idx));
@@ -475,10 +505,20 @@
   function clipBar(res) {
     const presets = clipPresets(res);
     const bar = el('div', { class: 'clipbar' });
-    const from = el('input', { type: 'date', id: 'clip-from', 'aria-label': 'Analyse from', value: (state.clip && state.clip.from) || '' });
-    const to = el('input', { type: 'date', id: 'clip-to', 'aria-label': 'Analyse until', value: (state.clip && state.clip.to) || '' });
-    if (state.fullRange) {
-      for (const inp of [from, to]) { inp.min = isoDay(state.fullRange.from); inp.max = isoDay(state.fullRange.to); }
+    // Pre-filled with the chat's own first and last day, not left blank. Two empty
+    // boxes with invisible min/max made you guess the range you were allowed to pick
+    // from; showing it is the whole point of a custom window.
+    const span = state.fullRange || res.range;
+    const from = el('input', {
+      type: 'date', id: 'clip-from', 'aria-label': 'Analyse from',
+      value: (state.clip && state.clip.from) || (span ? isoDay(span.from) : ''),
+    });
+    const to = el('input', {
+      type: 'date', id: 'clip-to', 'aria-label': 'Analyse until',
+      value: (state.clip && state.clip.to) || (span ? isoDay(span.to) : ''),
+    });
+    if (span) {
+      for (const inp of [from, to]) { inp.min = isoDay(span.from); inp.max = isoDay(span.to); }
     }
     const apply = (f, t) => {
       state.clip = (f || t) ? { from: f || null, to: t || null } : null;
@@ -621,13 +661,29 @@
           + 'are asked to back them up. This reads more like conversation, so Sourcing and Answering will be thin and the '
           + 'scores below are not worth much. Overview or Personal will tell you more.'));
     }
+    const mix = G.questionMix;
     box.append(
       el('h4', null, 'How to read this'),
       el('ul', null,
         el('li', null, 'The score is about conduct, not correctness. A well-argued case for something wrong still scores well, and that is deliberate.'),
         el('li', null, `The opening topic was read as: ${G.topicTerms.slice(0, 8).join(', ')}. Drift is measured against that, so a chat that legitimately moves on will show drift.`),
         el('li', null, 'Components marked n/a did not apply — nobody asked that person a question, say — so they drop out of the average rather than scoring zero.'),
-        el('li', null, `Split into ${G.episodes} conversation${G.episodes === 1 ? '' : 's'} at six-hour gaps. Drift is measured against the start of each one, not against day one of the whole chat.`),
+        // The single most important thing to say about a Rigor result: it did not
+        // read the whole chat, and here is the part it did read.
+        el('li', null, `Split into ${G.episodes} conversation${G.episodes === 1 ? '' : 's'} at six-hour gaps, of which `
+          + `${G.episodesScored} ${G.episodesScored === 1 ? 'was an argument' : 'were arguments'} and got scored — `
+          + `${G.scoredMessages.toLocaleString()} of ${res.totals.messages.toLocaleString()} messages`
+          + (G.scoredRange && !res.undated
+            ? `, from ${core.fmtDate(G.scoredRange.from)} to ${core.fmtDate(G.scoredRange.to)}.`
+            : '.')
+          + ' The small talk is left out of every number here.'),
+        mix && (mix.phatic || mix.rhetorical)
+          ? el('li', null, `Of ${(mix.phatic + mix.rhetorical + mix.substantive).toLocaleString()} questions in the whole chat, `
+            + `${mix.substantive.toLocaleString()} actually asked for something. `
+            + `${mix.phatic.toLocaleString()} ${mix.phatic === 1 ? 'was a check-in' : 'were check-ins'} like “Wbu?” `
+            + `and ${mix.rhetorical.toLocaleString()} ${mix.rhetorical === 1 ? 'was' : 'were'} rhetorical. `
+            + 'Only the first kind can go unanswered.')
+          : null,
         el('li', null, 'Conduct and Calibration count the share of messages that carried the thing, not words per 100 — being brief is neither rewarded nor punished.'),
         el('li', null, 'Nothing here checks whether a claim is true. The ledger tells you what to go and check.')));
     return box;
@@ -681,7 +737,11 @@
   }
 
   function measuresDrawer(res, lens, idx) {
-    const keys = Object.keys(core.METRICS).filter(k => core.METRICS[k].lenses.includes(lens));
+    const keys = Object.keys(core.METRICS)
+      .filter(k => core.METRICS[k].lenses.includes(lens))
+      // A clock-derived measure on an undated transcript would be a number about a
+      // timeline this page made up a moment ago.
+      .filter(k => !(res.undated && core.METRICS[k].needsTime));
     const ranked = keys.slice().sort((a, b) => diffScore(res, b) - diffScore(res, a));
     const top = ranked.slice(0, TOP_DIFFS), rest = ranked.slice(TOP_DIFFS);
     const panel = el('div', { class: 'panel' },
@@ -805,15 +865,18 @@
   function claimLedger(res, idx) {
     const G = res.rigor;
     const SHOWN = 12;
+    // No "When" column on an undated transcript: the only date available is the one
+    // the parser invented to keep the ordering working.
+    const dated = !res.undated;
     const row = c => el('tr', null,
       el('td', null, el('i', { class: 'sw', style: `background:${color(idx[c.who])};display:inline-block;margin-right:6px` }), c.who),
-      el('td', { class: 'muted' }, core.fmtDate(c.date)),
+      dated ? el('td', { class: 'muted' }, core.fmtDate(c.date)) : null,
       el('td', { class: 'claimtext' }, c.text),
       el('td', null, el('span', { class: 'tag ' + c.status }, c.status)),
       el('td', { class: 'num' }, c.challenged ? 'yes' : '—'),
       el('td', { class: 'num' }, c.answered ? 'yes' : c.challenged ? 'no' : '—'));
     const head = () => el('thead', null, el('tr', null,
-      el('th', null, 'Who'), el('th', null, 'When'), el('th', null, 'Claim'),
+      el('th', null, 'Who'), dated ? el('th', null, 'When') : null, el('th', null, 'Claim'),
       el('th', null, 'Status'), el('th', { class: 'num' }, 'Challenged'), el('th', { class: 'num' }, 'Backed up')));
     const total = G.ledgerTotal != null ? G.ledgerTotal : G.ledger.length;
     const panel = el('div', { class: 'panel' },
@@ -836,7 +899,7 @@
       el('p', { class: 'sub' }, `Direct questions that got no engaging reply within the next 6 messages. ${total.toLocaleString()} of them.`));
     if (!G.unanswered.length) { panel.append(el('p', { class: 'muted' }, 'Every question got a reply. That is genuinely rare.')); return panel; }
     panel.append(el('div', { class: 'quotes' }, G.unanswered.slice(0, 8).map(q =>
-      el('div', { class: 'quote' }, quoteMeta(idx, q.who, core.fmtDate(q.date)), el('p', null, q.text)))));
+      el('div', { class: 'quote' }, quoteMeta(idx, q.who, res.undated ? null : core.fmtDate(q.date)), el('p', null, q.text)))));
     return panel;
   }
 
@@ -865,7 +928,7 @@
     if ($('#showq').checked) {
       const ex = el('div', { class: 'quotes' });
       for (const s of res.stats) for (const k in s.examples) for (const q of s.examples[k].slice(0, 2))
-        ex.append(el('div', { class: 'quote' }, quoteMeta(idx, s.name, core.RHET_LABELS[k], dateTime(q.date)), el('p', null, q.text)));
+        ex.append(el('div', { class: 'quote' }, quoteMeta(idx, s.name, core.RHET_LABELS[k], res.undated ? null : dateTime(q.date)), el('p', null, q.text)));
       if (ex.childElementCount) panel.append(el('details', null, el('summary', null, 'Show matched messages'), ex));
     }
     return panel;
@@ -874,10 +937,121 @@
   function hottestPanel(res, idx) {
     return el('div', { class: 'panel' }, el('h3', null, 'Hottest messages'), el('p', { class: 'sub' }, 'Highest heat scores. Check whether the words were meant, quoted or joking.'),
       el('div', { class: 'quotes' }, res.hottest.map(h => el('div', { class: 'quote' },
-        quoteMeta(idx, h.who, dateTime(h.date), 'heat ' + h.heat.toFixed(2)), el('p', null, h.text)))));
+        quoteMeta(idx, h.who, res.undated ? null : dateTime(h.date), 'heat ' + h.heat.toFixed(2)), el('p', null, h.text)))));
   }
 
   /* --------------------------------------------------------------- wiring */
+
+  /* ------------------------------------------------------ headline carousel
+   * Every question here is one the report genuinely answers, so the headline is a
+   * table of contents rather than a slogan. The pairing matters: if a question is
+   * added without a panel behind it, the page starts promising something it does
+   * not deliver.
+   */
+  const HERO_QUESTIONS = [
+    ['Who actually ', 'started', ' it?'],                  // episodes, who opens after a 6h gap
+    ['Do you even speak the same ', 'language', '?'],      // code-switching + shared vocabulary
+    ['Which of you brings ', 'receipts', '?'],             // sourcing, the claim ledger
+    ['Who actually ', 'answers', ' the question?'],        // responsiveness, unanswered questions
+    ['Whose ', 'temper', ' turns up first?'],              // the heat curve
+    ['Are you even arguing about the same ', 'thing', '?'], // drift from the opening topic
+  ];
+  const HERO_DWELL_MS = 5200;
+  const HERO_DRAG_PX = 48;     // how far a drag must travel to count as a swipe
+
+  function heroCarousel() {
+    const box = $('#h1');
+    if (!box || !box.hasAttribute('data-rotator')) return;
+
+    const slides = HERO_QUESTIONS.map(([before, word, after], i) => {
+      const line = el('span', { class: 'rot-line' + (i ? '' : ' is-on') },
+        before, el('em', null, word), after);
+      return line;
+    });
+    box.textContent = '';
+    box.append(...slides);
+    box.classList.add('is-live');
+
+    // Reserve the tallest slide's height once, so nothing below the headline moves
+    // as the questions change length.
+    const settle = () => {
+      box.style.minHeight = '';
+      const tallest = Math.max(...slides.map(s => {
+        const was = s.className;
+        s.className = 'rot-line is-on';
+        const h = s.getBoundingClientRect().height;
+        s.className = was;
+        return h;
+      }));
+      if (tallest) box.style.minHeight = Math.ceil(tallest) + 'px';
+    };
+    settle();
+    addEventListener('resize', settle);
+
+    const tick = el('span', { class: 'rot-tick', 'aria-hidden': 'true' }, el('i'));
+    box.after(tick);
+    const fill = tick.firstElementChild;
+
+    let at = 0, timer = null, raf = null, startedAt = 0, held = false;
+
+    const show = (next, dir) => {
+      next = (next + slides.length) % slides.length;
+      if (next === at) return;
+      box.style.setProperty('--slide-from', (dir < 0 ? -1 : 1) * 1.5 + 'rem');
+      slides[at].classList.remove('is-on');
+      slides[at].classList.add('is-out');
+      const leaving = slides[at];
+      setTimeout(() => leaving.classList.remove('is-out'), 500);
+      at = next;
+      slides[at].classList.add('is-on');
+    };
+
+    const stop = () => { clearTimeout(timer); cancelAnimationFrame(raf); timer = raf = null; fill.style.setProperty('--p', 0); };
+    const run = () => {
+      if (reduceMotion() || held) return;
+      stop();
+      startedAt = performance.now();
+      const step = now => {
+        const p = Math.min(1, (now - startedAt) / HERO_DWELL_MS);
+        fill.style.setProperty('--p', p);
+        if (p < 1) raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+      timer = setTimeout(() => { show(at + 1, 1); run(); }, HERO_DWELL_MS);
+    };
+
+    // Hold to pause, drag sideways to move. No arrows, no dots: the gesture is the
+    // control, and the hairline is the only thing that hints there is more.
+    let downX = null;
+    box.addEventListener('pointerdown', e => {
+      downX = e.clientX; held = true;
+      box.classList.add('is-held');
+      box.setPointerCapture(e.pointerId);
+      stop();
+    });
+    box.addEventListener('pointerup', e => {
+      box.classList.remove('is-held');
+      held = false;
+      if (downX != null) {
+        const dx = e.clientX - downX;
+        if (Math.abs(dx) >= HERO_DRAG_PX) show(at + (dx < 0 ? 1 : -1), dx < 0 ? 1 : -1);
+      }
+      downX = null;
+      run();
+    });
+    box.addEventListener('pointercancel', () => { box.classList.remove('is-held'); held = false; downX = null; run(); });
+    // Keyboard and assistive technology get the same control the gesture gives.
+    box.tabIndex = 0;
+    box.setAttribute('aria-roledescription', 'carousel');
+    box.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight') { show(at + 1, 1); run(); }
+      else if (e.key === 'ArrowLeft') { show(at - 1, -1); run(); }
+    });
+    // Nothing should animate in a tab nobody is looking at.
+    document.addEventListener('visibilitychange', () => (document.hidden ? stop() : run()));
+    run();
+  }
+  heroCarousel();
 
   const zone = $('#zone'), file = $('#file');
   $('#pick').addEventListener('click', e => { e.stopPropagation(); file.click(); });
@@ -898,7 +1072,10 @@
   document.addEventListener('paste', e => {
     if (e.target.closest && e.target.closest('textarea,input')) return;
     const t = e.clipboardData && e.clipboardData.getData('text');
-    if (t && /\d[:.]\d{2}/.test(t)) { showFileCard('Pasted text', t.length); ingest(async () => t, 'Pasted conversation'); }
+    // Either a clock, or at least two "Name: message" lines — a transcript copied
+    // off a screen has no timestamps and used to be ignored here.
+    const looksLikeChat = /\d[:.]\d{2}/.test(t || '') || (t || '').split('\n').filter(l => /^[^:\n]{1,40}:\s+\S/.test(l)).length >= 2;
+    if (t && looksLikeChat) { showFileCard('Pasted text', t.length); ingest(async () => t, 'Pasted conversation'); }
   });
   ['#anon', '#order'].forEach(s => $(s).addEventListener('change', rerun));
   $('#relation').addEventListener('change', () => {

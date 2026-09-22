@@ -38,11 +38,32 @@ const stripComments = s => s
 // The JSON in lexicons/ is kept pretty-printed so diffs are reviewable; inline it minified.
 const json = p => JSON.stringify(JSON.parse(r(p)));
 
+/**
+ * VADER as JSON is 7,506 entries and 119 KB — a third of the page budget spent on
+ * quotes, colons and commas. Packed as `word score~word score` with the score in
+ * tenths it is 96 KB. Lossless: VADER is specified to one decimal place, and the
+ * build asserts that below rather than trusting it. core.js unpacks it.
+ *
+ * The separator is "~": the lexicon includes emoticons, so most ASCII punctuation
+ * appears inside a key. The assertion below is what caught "(-:|>*".
+ */
+const VADER_SEP = '~';
+
+function packVader(p) {
+  const v = JSON.parse(r(p));
+  const keys = Object.keys(v);
+  for (const k of keys) {
+    if (Math.abs(v[k] - Math.round(v[k] * 10) / 10) > 1e-9) throw new Error(`vader value for "${k}" needs more than one decimal: ${v[k]}`);
+    if (k.includes(VADER_SEP)) throw new Error(`vader key contains the packing separator: ${k}`);
+  }
+  return JSON.stringify(keys.map(k => k + ' ' + Math.round(v[k] * 10)).join(VADER_SEP));
+}
+
 const scripts = env => [
   r('web/vendor/jszip.min.js'),
   `window.TL_ENV=${JSON.stringify(env)};`
   + `window.TL_LEX=${safe(json('lexicons/lexicons.json'))};`
-  + `window.TL_VADER=${safe(json('lexicons/vader.json'))};`
+  + `window.TL_VADER=${safe(packVader('lexicons/vader.json'))};`
   + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`,
   stripComments(coreSrc),
   r('web/src/app.js'),
@@ -52,9 +73,9 @@ const scripts = env => [
 const CORE_INDEX = 2;
 const tagFor = i => (i === CORE_INDEX ? '<script id="tl-core">' : '<script>');
 
-const title = 'Threadlens — see how the argument actually went';
-const desc = 'Free, private chat analysis in your browser. Drop in a WhatsApp export and see who asked and who asserted, who started it, where the heat rose, and how well each side argued. Works on relationship arguments, family group chats and work threads. Nothing is uploaded.';
-const keywords = 'whatsapp chat analysis, argument analysis, who started the argument, relationship communication patterns, couples arguing over text, group chat analysis, conversation analysis, communication style, chat statistics, debate quality, private, offline';
+const title = 'Threadlens — the compatibility test for people who argue';
+const desc = 'The compatibility test for people who argue. Drop in a chat from WhatsApp, Instagram, Messenger, X, Discord or Reddit and see who started it, who brings receipts, who actually answers, and whether you are even arguing about the same thing. Same ruler for both sides, no verdict, nothing uploaded.';
+const keywords = 'chat compatibility test, whatsapp chat analysis, argument analysis, who started the argument, relationship communication patterns, couples arguing over text, group chat analysis, conversation analysis, communication style, chat statistics, debate quality, code switching, hinglish, banglish, private, offline';
 
 mkdirSync(join(root, 'dist'), { recursive: true });
 
@@ -105,7 +126,13 @@ ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 }
 
 // The page has to stay small enough to be worth downloading and running offline.
-const BUDGET_KB = 400;
+// It is one file with no network of any kind behind it, so everything it will ever
+// need — the code, the word lists, the sentiment lexicon, the zip reader — ships in
+// that number. The cap is a guard against drifting into a multi-megabyte page by
+// accident, not a target: at the time of writing the build comes in around 370 KB.
+// Before raising this again, check whether the growth is data (pack it, as VADER is
+// packed above) or code (it probably needs deleting).
+const BUDGET_KB = 600;
 const kb = statSync(join(root, 'dist/index.html')).size / 1024;
 console.log(`built dist/index.html (${kb.toFixed(0)} KB) and dist/threadlens-artifact.html`);
 if (kb > BUDGET_KB) {

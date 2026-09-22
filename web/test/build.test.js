@@ -84,8 +84,16 @@ test('the count-up animation is skipped when motion is reduced', () => {
 /* ------------------------------------------------------------ page budget */
 
 test('the page stays small enough to download and run offline', () => {
+  // Read the cap from the build rather than repeating it, so the two can never
+  // disagree about what the budget is.
+  const build = fs.readFileSync(path.join(root, 'scripts/build.mjs'), 'utf8');
+  const cap = Number((build.match(/BUDGET_KB\s*=\s*(\d+)/) || [])[1]);
+  assert.ok(cap > 0, 'scripts/build.mjs must declare a BUDGET_KB');
   const kb = fs.statSync(DIST).size / 1024;
-  assert.ok(kb <= 400, `dist/index.html is ${kb.toFixed(0)} KB, over the 400 KB budget`);
+  assert.ok(kb <= cap, `dist/index.html is ${kb.toFixed(0)} KB, over the ${cap} KB budget`);
+  // And the headroom is worth knowing about: if the page ever gets close to the cap
+  // again, the fix is to pack data, not to raise the number a second time.
+  assert.ok(kb < cap * 0.95 || process.env.CI, `dist/index.html is at ${Math.round(kb / cap * 100)}% of the budget`);
 });
 
 test('the page declares the Rigor lens and the relationship keywords it should be found by', () => {
@@ -119,4 +127,39 @@ test('the worker source is valid JS and still exports the core', () => {
   // and it must still actually parse a chat
   const p = fake.ThreadlensCore.parseChat('01/02/2026, 10:01 - A: hello there friend\n01/02/2026, 10:02 - B: hi');
   assert.strictEqual(p.messages.length, 2);
+});
+
+test('the packed VADER lexicon in the page round-trips to the source file exactly', () => {
+  // VADER is inlined packed to keep the page inside its size budget. A packing bug
+  // would shift every sentiment score by a silent, plausible-looking amount.
+  const m = dist().match(/window\.TL_VADER=("(?:[^"\\]|\\.)*")/);
+  assert.ok(m, 'the page must carry a packed VADER string');
+  const unpacked = require('../src/core.js').unpackVader(JSON.parse(m[1]));
+  const source = JSON.parse(fs.readFileSync(path.join(root, 'lexicons/vader.json'), 'utf8'));
+  const keys = Object.keys(source);
+  assert.strictEqual(Object.keys(unpacked).length, keys.length, 'entries were lost in packing');
+  for (const k of keys) {
+    assert.ok(Math.abs(unpacked[k] - source[k]) < 1e-9, `"${k}" unpacked to ${unpacked[k]}, expected ${source[k]}`);
+  }
+});
+
+test('the headline carousel stops rotating when motion is reduced', () => {
+  // Invariant 6: with reduced motion nothing may animate on its own, and every
+  // animated element must still land on its final state. For a carousel that means
+  // one question, fully visible and untransformed -- not a blank or half-faded one.
+  const css = fs.readFileSync(path.join(root, 'web/src/style.css'), 'utf8');
+  const block = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(block, /\.rotator[^}]*\.is-on\s*\{[^}]*opacity:\s*1/, 'the visible slide must be fully opaque');
+  assert.match(block, /\.rotator[^}]*\.is-on\s*\{[^}]*transform:\s*none/, 'the visible slide must not sit mid-slide');
+
+  const app = fs.readFileSync(path.join(root, 'web/src/app.js'), 'utf8');
+  const fn = app.slice(app.indexOf('function heroCarousel'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n  heroCarousel'));
+  assert.ok(/reduceMotion\(\)/.test(body), 'the carousel must consult reduceMotion()');
+  // The auto-advance timer must be guarded, not merely the transition.
+  const run = body.slice(body.indexOf('const run = '));
+  const guard = run.indexOf('reduceMotion()');
+  const timer = run.indexOf('setTimeout');
+  assert.ok(guard > -1 && timer > guard, 'the reduced-motion guard must come before the advance timer');
+  assert.ok(/reduceMotion\(\)[^;]{0,40}\)\s*return;/.test(run), 'it must return before scheduling anything');
 });

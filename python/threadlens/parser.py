@@ -5,7 +5,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 INVISIBLE = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 # The year is optional: selecting messages on a phone and copying them yields a
@@ -132,6 +132,51 @@ def _as_dt(v, end_of_day=False):
     return dt.replace(hour=23, minute=59, second=59, microsecond=999999) if end_of_day else dt
 
 
+# "Ravi: hello" -- a transcript with no timestamps at all. A name is short and has
+# no sentence punctuation in it, which is what separates this from an ordinary line
+# of prose that happens to contain a colon.
+UNDATED = re.compile(r"^([^:\n]{1,40}):\s+(\S.*)$")
+UNDATED_MIN_ROWS = 3   # fewer than this is a stray colon, not a transcript
+UNDATED_EPOCH = datetime(2000, 1, 1)
+UNDATED_STEP = timedelta(minutes=1)
+
+
+def _tokenize_undated(text):
+    """Parse a transcript that carries an order but no times: copied message bubbles,
+    a pasted screenshot transcription, notes from a call.
+
+    Messages are given a synthetic timeline one minute apart. That keeps every
+    downstream pass -- episodes, reply gaps, the day series -- working on real
+    datetimes instead of spreading None checks through the whole scorer. It also
+    makes those particular numbers meaningless, which is why `undated` is set:
+    callers must HIDE anything time-derived rather than print an invented hour.
+
+    Mirrors tokenizeUndated() in core.js.
+    """
+    out = []
+    seen = 0
+    for line in str(text or "").split("\n"):
+        line = _clean(line)
+        probe = line.lstrip()
+        if probe:
+            seen += 1
+        m = UNDATED.match(probe)
+        # A speaker is a name, not a clause: at most a few words and no sentence
+        # punctuation. Without that, "Here is the thing: it was never about the money"
+        # reads as a person called "Here is the thing".
+        name = m.group(1).strip() if m else ""
+        if m and not re.search(r"[.!?,;]", name) and len(name.split()) <= 4:
+            out.append([UNDATED_EPOCH + len(out) * UNDATED_STEP, name, m.group(2)])
+        elif out and probe:
+            out[-1][2] += "\n" + line
+    # A transcript reuses a small cast of speakers; prose that happens to contain
+    # colons invents a new "name" every time. That ratio is the reliable signal.
+    authors = {r[1] for r in out}
+    if len(out) < UNDATED_MIN_ROWS or len(authors) > -(-len(out) // 2):
+        return [], seen
+    return out, seen
+
+
 def parse_chat(text: str, date_order: str = "auto", frm=None, to=None):
     """Parse an export. `frm`/`to` clip the conversation before anything is scored,
     so rates, episodes, drift and the ledger are all computed on the clip."""
@@ -152,16 +197,30 @@ def parse_chat(text: str, date_order: str = "auto", frm=None, to=None):
             rows.append([m[0], m[1]])
         elif rows:
             rows[-1][1] += "\n" + line
-    order = _order([r[0] for r in rows]) if date_order == "auto" else date_order
+    # Not one timestamp anywhere: this is a transcript, not an export. Fall back
+    # rather than returning nothing, which is what "paste doesn't work" looked like
+    # when someone copied the bubbles instead of exporting the chat.
+    undated = not rows
+    undated_rows = []
+    if undated:
+        undated_rows, undated_seen = _tokenize_undated(text)
+        seen = seen or undated_seen
+    order = "DMY" if undated else (_order([r[0] for r in rows]) if date_order == "auto" else date_order)
     frm = _as_dt(frm)
     to = _as_dt(to, end_of_day=True)
     messages, system, clipped = [], 0, 0
     ctx = {"year": None, "prev": None}
-    for head, rest in rows:
-        date = _date(head, order, ctx)
+    source = ([(d, who + ": " + body) for d, who, body in undated_rows] if undated
+              else [(None, r[1]) for r in rows])
+    for pos, (fixed, rest) in enumerate(source):
+        if undated:
+            date = fixed
+        else:
+            date = _date(rows[pos][0], order, ctx)
         if not date:
             continue
-        if (frm and date < frm) or (to and date > to):
+        # A clip is a date range, and an undated transcript has no dates to clip by.
+        if not undated and ((frm and date < frm) or (to and date > to)):
             clipped += 1
             continue
         idx = rest.find(": ")
@@ -175,6 +234,10 @@ def parse_chat(text: str, date_order: str = "auto", frm=None, to=None):
         kind = "media" if MEDIA.match(body) else "deleted" if DELETED.match(body) else "text"
         messages.append(Message(date, name.strip(), body if kind == "text" else "", kind, edited))
     return {"messages": messages, "date_order": order, "system_lines": system,
+            # `undated` means the timeline is synthetic. Every time-derived number --
+            # hours of day, reply gaps, the day series, the clip -- is an artefact of
+            # that and must be hidden rather than shown.
+            "undated": undated,
             "line_count": seen, "first_line": first, "clipped": clipped}
 
 

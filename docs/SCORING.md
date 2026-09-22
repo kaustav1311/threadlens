@@ -291,6 +291,77 @@ numbers along those lines is yours, not the tool's, and it is not supported by a
 
 ---
 
+## 6a. Measured accuracy, and the baseline to beat
+
+Section 6 lists the limits in words. This section lists them as numbers, because "the keyword matching
+isn't good enough" is only actionable once it is measured.
+
+`make eval` scores the two sentence-level gates against a hand-labelled set,
+[`samples/labels_banglish_mixed.json`](../samples/labels_banglish_mixed.json), over
+[`samples/sample_banglish_mixed.txt`](../samples/sample_banglish_mixed.txt). That fixture is synthetic but
+not arbitrary: it reproduces the measured structure of a real Bengali-English chat — median 3 words per
+message, 11% of messages carrying a question, nine episodes at the six-hour split, and two genuine
+arguments buried inside small talk — with invented people, places and specifics. No real conversation is
+stored in this repository.
+
+Both sides build their units in [`scripts/items.mjs`](../scripts/items.mjs), so a gold label and a
+prediction can never be compared across two different sentence splits. `node scripts/eval.mjs --errors`
+prints what each gate got wrong, which is the only view that says what to fix next.
+
+| Decision | v0.2 accuracy | v0.2 macro-F1 | v0.3 accuracy | v0.3 macro-F1 |
+|---|---|---|---|---|
+| Claim detection | 57.1% | 55.2% | **92.2%** | **91.1%** |
+| Question type | 65.0% | 26.3% | **95.0%** | **94.0%** |
+| Is it an argument? | — | — | **100%** | **100%** |
+
+### What v0.2 was actually doing
+
+- **Claim detection precision was 36.8%.** Nearly two thirds of what the claim ledger printed was not a
+  claim — it was a plan, a piece of advice, an opinion, or a remark about the speakers' own arrangements.
+- **Phatic and rhetorical questions scored 0.0%.** The code had no concept of either, so every `Wbu?` and
+  every whataboutism was booked as a substantive question somebody had failed to answer.
+
+Three causes, two of them outright bugs:
+
+1. **The stoplist was English-only.** The romanised Bengali function words that make up much of a chat like
+   this (`na`, `ami`, `ta`, `kore`, `theke`, `tui`, `eta`) were treated as rare, distinctive content words.
+   Topic vectors, drift and question/answer overlap were all computed on that mistake.
+2. **Openers matched inside words.** `intent_opener` contained a bare `"id "` and `"ill "`, matched with
+   `indexOf`. `"sa|id i|t was ninety minutes"` and `"st|ill s|ays"` both matched, so any sentence with
+   *said*, *did* or *still* near its start was silently dropped as a statement of intent. Same class of bug
+   as a bare month prefix matching "market" — openers are word-boundary anchored now.
+3. **`"the"` was a factual verb.** Romanised Hindi *"the"* (they were) shares its spelling with the commonest
+   word in English, so on many chats the verb gate passed everything. Factual verbs are per-language now,
+   and the Hindi past copula is covered by `tha`/`thi`/`thay` instead.
+
+### The change that mattered most
+
+Scoping Rigor to the arguments. Applicability used to be computed once for the whole chat, so one real
+argument inside thirty conversations averaged into nothing. It is now decided per episode, and the lens
+scores only the conversations where people are both asserting and disagreeing.
+
+On a real three-year chat this took the claim ledger from 112 entries — mostly flat-hunting, `"My stipend
+is too low"`, `"I got 1bhk brand new"` — to 103 entries drawn entirely from the two political arguments
+buried inside it, and cut "questions nobody answered" from 84 to 44. The lens went from `weak` to fitting.
+
+### Known residual
+
+The five claim-detection errors that remain are evaluative sentences a word list cannot separate from
+assertions: *"It is political in every way possible"* against *"It was violence for a political cause"*.
+That distinction needs semantics, and it is what the optional local-model tier is for — never the web app,
+which stays sealed and heuristic.
+
+The gold set is 77 claim candidates, 20 questions and 9 episodes. That is enough to catch a regression and
+not enough to justify a decimal place; treat differences under a few points as noise. The fixture is also
+somewhat easier than the real chat it was modelled on — on the real export the question classifier finds
+fewer rhetorical questions than a human would, because the rhetorical frames are written for English and
+Hindi and not for Bengali.
+
+Re-run `make eval` after any change to the gates or the lexicons. A change that improves a score it was
+not aimed at deserves as much suspicion as one that breaks a score it was.
+
+---
+
 ## 7. Changing the model
 
 The word lists are the highest-value contribution, especially for Bengali, Tamil, Urdu and other languages.

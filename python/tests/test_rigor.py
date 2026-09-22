@@ -86,8 +86,12 @@ def test_ledger_excludes_questions_and_offers():
 
 
 def test_month_prefix_is_not_a_date():
-    text = ("01/02/2026, 10:01 - A: the market was busy and maybe it stays busy for everyone there\n"
-            "01/02/2026, 10:02 - A: the report was published on 12 March 2026 and it says the opposite\n")
+    # Padded into one real argument, because Rigor only builds a ledger for those.
+    lines = ["01/02/2026, 10:01 - A: the market was busy and maybe it stays busy for everyone there",
+             "01/02/2026, 10:02 - B: the report was published on 12 March 2026 and it says the opposite"]
+    lines += [f"01/02/2026, 10:{3 + i:02d} - {'A' if i % 2 else 'B'}: "
+              "you are wrong and the report never said that" for i in range(8)]
+    text = "\n".join(lines) + "\n"
     ledger = Analyzer().analyse(parse_chat(text))["rigor"]["ledger"]
     market = next(c for c in ledger if "market" in c["text"])
     dated = next(c for c in ledger if "March" in c["text"])
@@ -106,9 +110,14 @@ def test_rigor_report():
 
 # --------------------------------------------------------------------- parity
 
-@pytest.mark.parametrize("sample", MIRRORS + ("sample_debate_android.txt",))
+@pytest.mark.parametrize("sample", MIRRORS + ("sample_debate_android.txt", "sample_banglish_mixed.txt"))
 def test_matches_javascript(sample):
-    """Invariant 4: core.js and rigor.py must agree, not merely look similar."""
+    """Invariant 4: core.js and rigor.py must agree, not merely look similar.
+
+    sample_banglish_mixed.txt is here for language detection specifically: the other
+    samples are English, so they take the same stoplist either way and would agree
+    even if one side never detected a second language.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed")
@@ -119,6 +128,10 @@ def test_matches_javascript(sample):
     py = run(sample)["rigor"]
 
     assert js["topicTerms"] == py["topic_terms"]
+    assert js["languages"] == py["languages"], "the two sides detected different languages"
+    assert js["applies"] == py["applies"]
+    assert js["episodesScored"] == py["episodes_scored"], "different episodes were judged to be arguments"
+    assert js["questionMix"] == py["question_mix"]
     for name, jp in js["people"].items():
         pp = py["people"][name]
         assert jp["score"] == pytest.approx(pp["score"], abs=1e-9), name
@@ -150,8 +163,10 @@ def test_conduct_counts_messages_not_words():
     """Per-100-words punished brevity: one insult in 20 words scored worse than
     five in 500. Conduct is incidence now, so verbosity must not move it."""
     pad = "the committee report from March 2026 set out the position at some length and in detail "
-    terse = [(1 + i, 9, i, "Terse", "you are an idiot" if i == 0 else "the report says it rose") for i in range(10)]
-    windy = [(1 + i, 9, i, "Windy", ("you are an idiot " if i == 0 else "") + pad + "and the report says it rose")
+    # One sitting, not one message a day: Rigor only scores conversations that are
+    # arguments, and ten messages six-hour-gaps apart are ten conversations of one.
+    terse = [(1, 9, i, "Terse", "you are an idiot" if i == 0 else "the report says it rose") for i in range(10)]
+    windy = [(1, 9, i, "Windy", ("you are an idiot " if i == 0 else "") + pad + "and the report says it rose")
              for i in range(10)]
     a = Analyzer().analyse(parse_chat(_mk(terse)))["rigor"]["people"]["Terse"]
     b = Analyzer().analyse(parse_chat(_mk(windy)))["rigor"]["people"]["Windy"]

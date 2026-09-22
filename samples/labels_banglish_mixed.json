@@ -1,0 +1,651 @@
+{
+ "sample": "samples/sample_banglish_mixed.txt",
+ "note": "Hand-labelled gold set for scripts/eval.mjs. The fixture is synthetic: it reproduces the structure of a real Banglish chat (message length distribution, code-switching, question rate, episode sizes, two arguments buried in small talk) with invented people, places and specifics. No real conversation is stored here. Units come from scripts/items.mjs; regenerate this file if the fixture or the sentence split changes.",
+ "labelled": {
+  "claims": 77,
+  "questions": 20,
+  "episodes": 9
+ },
+ "claims": [
+  {
+   "id": "3.1",
+   "who": "Sourav",
+   "text": "been two months on the night shift 🫠",
+   "label": "no"
+  },
+  {
+   "id": "7.0",
+   "who": "Riya",
+   "text": "Paeds at the district hospital",
+   "label": "no"
+  },
+  {
+   "id": "21.0",
+   "who": "Sourav",
+   "text": "The premium listings usually move faster",
+   "label": "yes"
+  },
+  {
+   "id": "23.0",
+   "who": "Sourav",
+   "text": "Okay, I'll ask Meghna",
+   "label": "no"
+  },
+  {
+   "id": "24.0",
+   "who": "Riya",
+   "text": "Jantam i na egulo r bepare",
+   "label": "no"
+  },
+  {
+   "id": "25.0",
+   "who": "Sourav",
+   "text": "Or you can talk to her too",
+   "label": "no"
+  },
+  {
+   "id": "26.0",
+   "who": "Sourav",
+   "text": "O Barasat er dike thake",
+   "label": "yes"
+  },
+  {
+   "id": "32.0",
+   "who": "Sourav",
+   "text": "Peye jabe mostly...try the bigger complexes, onek tai better chances thake",
+   "label": "no"
+  },
+  {
+   "id": "34.0",
+   "who": "Sourav",
+   "text": "try to look for 1-2 km auto distance or one auto route, ask the owner in depth about connectivity",
+   "label": "no"
+  },
+  {
+   "id": "35.0",
+   "who": "Riya",
+   "text": "Place has to be clean bas.",
+   "label": "no"
+  },
+  {
+   "id": "36.0",
+   "who": "Riya",
+   "text": "Bas this is how i was looking",
+   "label": "no"
+  },
+  {
+   "id": "37.0",
+   "who": "Sourav",
+   "text": "You have to contact them and pay a visit maybe...",
+   "label": "no"
+  },
+  {
+   "id": "38.0",
+   "who": "Sourav",
+   "text": "Regarding what's the connectivity in case you want to go to the station everyday.",
+   "label": "no"
+  },
+  {
+   "id": "39.0",
+   "who": "Riya",
+   "text": "Auto wala road is very near",
+   "label": "yes"
+  },
+  {
+   "id": "40.0",
+   "who": "Sourav",
+   "text": "Tahole peyecho bola jabena...eta Behala r kache...not sure kerom area..",
+   "label": "yes"
+  },
+  {
+   "id": "41.0",
+   "who": "Riya",
+   "text": "Na hole toh i have to na",
+   "label": "no"
+  },
+  {
+   "id": "42.0",
+   "who": "Sourav",
+   "text": "The last train from that side leaves at 22:40, so keep that in mind",
+   "label": "yes"
+  },
+  {
+   "id": "45.1",
+   "who": "Sourav",
+   "text": "Meghna missed it twice last month",
+   "label": "yes"
+  },
+  {
+   "id": "56.0",
+   "who": "Sourav",
+   "text": "Thats fine for that area honestly",
+   "label": "no"
+  },
+  {
+   "id": "75.0",
+   "who": "Riya",
+   "text": "But we love the little ones you get to hold 🥹",
+   "label": "no"
+  },
+  {
+   "id": "76.0",
+   "who": "Sourav",
+   "text": "You are doing great",
+   "label": "no"
+  },
+  {
+   "id": "79.0",
+   "who": "Sourav",
+   "text": "Deploy chilo kal raate",
+   "label": "no"
+  },
+  {
+   "id": "86.0",
+   "who": "Riya",
+   "text": "This was a fault of the ruling party in every bit.",
+   "label": "yes"
+  },
+  {
+   "id": "87.0",
+   "who": "Sourav",
+   "text": "It is political in every way possible",
+   "label": "no"
+  },
+  {
+   "id": "88.0",
+   "who": "Riya",
+   "text": "It was violence for a political cause",
+   "label": "yes"
+  },
+  {
+   "id": "89.0",
+   "who": "Riya",
+   "text": "Not just someone lost it that night",
+   "label": "yes"
+  },
+  {
+   "id": "90.0",
+   "who": "Sourav",
+   "text": "But making the agenda political isn't the goal right",
+   "label": "no"
+  },
+  {
+   "id": "91.0",
+   "who": "Sourav",
+   "text": "I am asking for people to see it through the politics and be a human first",
+   "label": "no"
+  },
+  {
+   "id": "93.0",
+   "who": "Riya",
+   "text": "The committee report from March says the response time was four hours",
+   "label": "yes"
+  },
+  {
+   "id": "94.0",
+   "who": "Riya",
+   "text": "Four hours is not an accident, thats a decision",
+   "label": "no"
+  },
+  {
+   "id": "96.0",
+   "who": "Riya",
+   "text": "Section 3 of the same report, page 12",
+   "label": "yes"
+  },
+  {
+   "id": "97.0",
+   "who": "Sourav",
+   "text": "Okay that I will actually read",
+   "label": "no"
+  },
+  {
+   "id": "98.0",
+   "who": "Sourav",
+   "text": "But the ward office said it was ninety minutes",
+   "label": "yes"
+  },
+  {
+   "id": "99.0",
+   "who": "Riya",
+   "text": "The ward office says a lot of things",
+   "label": "no"
+  },
+  {
+   "id": "100.0",
+   "who": "Sourav",
+   "text": "Fair, but then we need the log, not either statement",
+   "label": "no"
+  },
+  {
+   "id": "101.0",
+   "who": "Riya",
+   "text": "Amar kache log nei",
+   "label": "no"
+  },
+  {
+   "id": "102.0",
+   "who": "Riya",
+   "text": "The point stands though",
+   "label": "no"
+  },
+  {
+   "id": "104.0",
+   "who": "Sourav",
+   "text": "Ruling party ta ke dosh dile toh onek kichu explain hoi na",
+   "label": "no"
+  },
+  {
+   "id": "105.0",
+   "who": "Riya",
+   "text": "It's only in this state where you'll get these excuses",
+   "label": "yes"
+  },
+  {
+   "id": "106.0",
+   "who": "Sourav",
+   "text": "Thats not true at all",
+   "label": "no"
+  },
+  {
+   "id": "107.0",
+   "who": "Sourav",
+   "text": "It's a different scenario all together outside also",
+   "label": "yes"
+  },
+  {
+   "id": "108.0",
+   "who": "Riya",
+   "text": "Ei state r baire no one can fight like this",
+   "label": "yes"
+  },
+  {
+   "id": "109.0",
+   "who": "Sourav",
+   "text": "Last year the neighbouring state had the same protest and it ran for nine days",
+   "label": "yes"
+  },
+  {
+   "id": "111.0",
+   "who": "Riya",
+   "text": "Nine days and what changed",
+   "label": "no"
+  },
+  {
+   "id": "112.0",
+   "who": "Sourav",
+   "text": "Two officers were suspended in November",
+   "label": "yes"
+  },
+  {
+   "id": "114.0",
+   "who": "Riya",
+   "text": "Suspended is a holiday",
+   "label": "no"
+  },
+  {
+   "id": "115.0",
+   "who": "Sourav",
+   "text": "Maybe, but you asked what changed and thats the answer",
+   "label": "no"
+  },
+  {
+   "id": "118.0",
+   "who": "Sourav",
+   "text": "Thats a different question but okay",
+   "label": "no"
+  },
+  {
+   "id": "119.0",
+   "who": "Sourav",
+   "text": "I don't think either of us has the numbers here",
+   "label": "no"
+  },
+  {
+   "id": "120.0",
+   "who": "Riya",
+   "text": "The data still says we are over 70%",
+   "label": "yes"
+  },
+  {
+   "id": "121.0",
+   "who": "Sourav",
+   "text": "Over 70% of what though",
+   "label": "no"
+  },
+  {
+   "id": "123.0",
+   "who": "Sourav",
+   "text": "Then that number isn't doing the work you want it to do",
+   "label": "no"
+  },
+  {
+   "id": "125.0",
+   "who": "Riya",
+   "text": "Tui always do this",
+   "label": "no"
+  },
+  {
+   "id": "127.0",
+   "who": "Riya",
+   "text": "Ask for a source and then walk away",
+   "label": "no"
+  },
+  {
+   "id": "128.0",
+   "who": "Sourav",
+   "text": "I literally said I would read the report",
+   "label": "no"
+  },
+  {
+   "id": "129.0",
+   "who": "Sourav",
+   "text": "Correction on my earlier message, I said ninety minutes was the ward office figure but it was the press note.",
+   "label": "yes"
+  },
+  {
+   "id": "129.1",
+   "who": "Sourav",
+   "text": "The report figure I still have to check.",
+   "label": "no"
+  },
+  {
+   "id": "131.0",
+   "who": "Riya",
+   "text": "Read it and tell me",
+   "label": "no"
+  },
+  {
+   "id": "134.0",
+   "who": "Sourav",
+   "text": "How's the new place been",
+   "label": "no"
+  },
+  {
+   "id": "145.0",
+   "who": "Sourav",
+   "text": "I said they handled that one case better, not that they are better",
+   "label": "no"
+  },
+  {
+   "id": "147.0",
+   "who": "Riya",
+   "text": "Every party on one side but yours",
+   "label": "no"
+  },
+  {
+   "id": "148.0",
+   "who": "Sourav",
+   "text": "Thats not what I said and you know it",
+   "label": "no"
+  },
+  {
+   "id": "149.0",
+   "who": "Sourav",
+   "text": "The audit from October put the backlog at 1,240 cases in this district",
+   "label": "yes"
+  },
+  {
+   "id": "150.0",
+   "who": "Sourav",
+   "text": "That number is the same whichever side you like",
+   "label": "no"
+  },
+  {
+   "id": "151.0",
+   "who": "Riya",
+   "text": "An audit nobody acted on",
+   "label": "yes"
+  },
+  {
+   "id": "152.0",
+   "who": "Sourav",
+   "text": "Sure, but you asked for a number and thats the number",
+   "label": "no"
+  },
+  {
+   "id": "153.0",
+   "who": "Riya",
+   "text": "You people always do this",
+   "label": "no"
+  },
+  {
+   "id": "155.0",
+   "who": "Sourav",
+   "text": "I'd rather not do the labels",
+   "label": "no"
+  },
+  {
+   "id": "156.0",
+   "who": "Sourav",
+   "text": "On the substance, the backlog figure is in the October audit and the response time is in the March report.",
+   "label": "yes"
+  },
+  {
+   "id": "157.0",
+   "who": "Riya",
+   "text": "Nothing will change my mind on this",
+   "label": "no"
+  },
+  {
+   "id": "158.0",
+   "who": "Riya",
+   "text": "I don't care what the audit says",
+   "label": "no"
+  },
+  {
+   "id": "159.0",
+   "who": "Sourav",
+   "text": "Then there isn't much to check together",
+   "label": "no"
+  },
+  {
+   "id": "164.0",
+   "who": "Sourav",
+   "text": "Then the number was never the point",
+   "label": "no"
+  },
+  {
+   "id": "167.0",
+   "who": "Sourav",
+   "text": "Thats all I wanted",
+   "label": "no"
+  },
+  {
+   "id": "168.0",
+   "who": "Riya",
+   "text": "But the response time thing still stands",
+   "label": "no"
+  },
+  {
+   "id": "169.1",
+   "who": "Sourav",
+   "text": "I said I'd read it and I did — section 3 says four hours from the first call, so you were right about that",
+   "label": "yes"
+  },
+  {
+   "id": "171.0",
+   "who": "Sourav",
+   "text": "I was wrong about the ninety minutes",
+   "label": "no"
+  }
+ ],
+ "questions": [
+  {
+   "id": "2.0",
+   "who": "Riya",
+   "text": "Kmn achis?",
+   "label": "phatic"
+  },
+  {
+   "id": "4.0",
+   "who": "Sourav",
+   "text": "Wbu?",
+   "label": "phatic"
+  },
+  {
+   "id": "5.0",
+   "who": "Sourav",
+   "text": "Posting holo?",
+   "label": "substantive"
+  },
+  {
+   "id": "11.0",
+   "who": "Sourav",
+   "text": "Ei tatei to?",
+   "label": "substantive"
+  },
+  {
+   "id": "12.0",
+   "who": "Riya",
+   "text": "Tui kono broker chinis?",
+   "label": "substantive"
+  },
+  {
+   "id": "19.0",
+   "who": "Sourav",
+   "text": "Didn't try the rental sites?",
+   "label": "substantive"
+  },
+  {
+   "id": "49.0",
+   "who": "Riya",
+   "text": "Flat dekhle?",
+   "label": "substantive"
+  },
+  {
+   "id": "50.0",
+   "who": "Sourav",
+   "text": "Ektu bhetore lagchena?",
+   "label": "substantive"
+  },
+  {
+   "id": "53.0",
+   "who": "Sourav",
+   "text": "Rent koto?",
+   "label": "substantive"
+  },
+  {
+   "id": "57.0",
+   "who": "Sourav",
+   "text": "Confirm kore felbenaki?",
+   "label": "substantive"
+  },
+  {
+   "id": "64.0",
+   "who": "Sourav",
+   "text": "Treat debe?",
+   "label": "phatic"
+  },
+  {
+   "id": "73.0",
+   "who": "Sourav",
+   "text": "Is it so stressful, the course?",
+   "label": "substantive"
+  },
+  {
+   "id": "81.0",
+   "who": "Riya",
+   "text": "Ghum hoyeche?",
+   "label": "phatic"
+  },
+  {
+   "id": "95.0",
+   "who": "Sourav",
+   "text": "Where did you see four hours?",
+   "label": "substantive"
+  },
+  {
+   "id": "116.0",
+   "who": "Riya",
+   "text": "And what about the ones who stayed quiet for months?",
+   "label": "rhetorical"
+  },
+  {
+   "id": "117.0",
+   "who": "Riya",
+   "text": "Tab kaha the tomar log?",
+   "label": "rhetorical"
+  },
+  {
+   "id": "138.0",
+   "who": "Sourav",
+   "text": "Tank issue?",
+   "label": "substantive"
+  },
+  {
+   "id": "144.0",
+   "who": "Riya",
+   "text": "Bolchis the opposition is better off than the ruling party?",
+   "label": "substantive"
+  },
+  {
+   "id": "162.0",
+   "who": "Sourav",
+   "text": "If the backlog were 200 instead of 1,240 would you still say the same thing?",
+   "label": "rhetorical"
+  },
+  {
+   "id": "175.0",
+   "who": "Sourav",
+   "text": "Are you coming down for the holidays?",
+   "label": "substantive"
+  }
+ ],
+ "episodes": [
+  {
+   "id": "0",
+   "from": 0,
+   "to": 48,
+   "label": "logistics"
+  },
+  {
+   "id": "1",
+   "from": 49,
+   "to": 60,
+   "label": "logistics"
+  },
+  {
+   "id": "2",
+   "from": 61,
+   "to": 68,
+   "label": "casual"
+  },
+  {
+   "id": "3",
+   "from": 69,
+   "to": 69,
+   "label": "casual"
+  },
+  {
+   "id": "4",
+   "from": 70,
+   "to": 85,
+   "label": "casual"
+  },
+  {
+   "id": "5",
+   "from": 86,
+   "to": 133,
+   "label": "argument"
+  },
+  {
+   "id": "6",
+   "from": 134,
+   "to": 143,
+   "label": "casual"
+  },
+  {
+   "id": "7",
+   "from": 144,
+   "to": 174,
+   "label": "argument"
+  },
+  {
+   "id": "8",
+   "from": 175,
+   "to": 179,
+   "label": "logistics"
+  }
+ ]
+}

@@ -95,9 +95,12 @@ test('a sourced claim is recognised and a bare assertion is not', () => {
 test('a month prefix inside an ordinary word is not a date', () => {
   // "market" starts with "mar", "maybe" with "may" -- both used to count as sourcing.
   const plain = 'A: the market was busy and maybe it stays busy for everyone there';
-  const dated = 'A: the report was published on 12 March 2026 and it says the opposite';
-  const mk = body => '01/02/2026, 10:0' + (mk.n = (mk.n || 0) + 1) + ' - ' + body;
-  const res = A.analyse(core.parseChat([mk(plain), mk(dated)].join('\n')));
+  const dated = 'B: the report was published on 12 March 2026 and it says the opposite';
+  const mk = body => '01/02/2026, 10:' + String((mk.n = (mk.n || 0) + 1)).padStart(2, '0') + ' - ' + body;
+  // Padded into one real argument, because Rigor only builds a ledger for those.
+  const lines = [mk(plain), mk(dated)];
+  for (let i = 0; i < 8; i++) lines.push(mk((i % 2 ? 'A' : 'B') + ': you are wrong and the report never said that'));
+  const res = A.analyse(core.parseChat(lines.join('\n')));
   const byText = Object.fromEntries(res.rigor.ledger.map(c => [c.text.slice(0, 12), c]));
   const marketClaim = res.rigor.ledger.find(c => /market/.test(c.text));
   const datedClaim = res.rigor.ledger.find(c => /March/.test(c.text));
@@ -138,9 +141,11 @@ test('conduct does not punish brevity: it counts messages, not words per 100', (
   // ones. Their Conduct must be the same.
   const padding = 'the committee report from March 2026 set out the position at some length and in detail ';
   const terse = [], windy = [];
+  // One sitting, not one message a day: Rigor only scores conversations that are
+  // arguments, and ten messages six-hour-gaps apart are ten conversations of one.
   for (let i = 0; i < 10; i++) {
-    terse.push([1 + i, 9, i, 'Terse', i === 0 ? 'you are an idiot' : 'the report says it rose']);
-    windy.push([1 + i, 9, i, 'Windy', (i === 0 ? 'you are an idiot ' : '') + padding + 'and the report says it rose']);
+    terse.push([1, 9, i, 'Terse', i === 0 ? 'you are an idiot' : 'the report says it rose']);
+    windy.push([1, 9, i, 'Windy', (i === 0 ? 'you are an idiot ' : '') + padding + 'and the report says it rose']);
   }
   const a = A.analyse(core.parseChat(mk(terse))).rigor.people.Terse;
   const b = A.analyse(core.parseChat(mk(windy))).rigor.people.Windy;
@@ -222,4 +227,120 @@ test('a clip narrows the conversation before anything is scored', () => {
   assert.ok(clipped.totals.messages < A.analyse(all).totals.messages);
   assert.strictEqual(all.clipped, 0);
   assert.ok(firstDay.clipped > 0);
+});
+
+/* ------------------------------------------------------------- languages */
+
+test('a code-switched chat is scored with its own function words, an English one is not', () => {
+  const banglish = analyse('sample_banglish_mixed.txt').rigor;
+  const english = analyse('rigor_left_vs_right.txt').rigor;
+
+  assert.deepEqual(english.languages, ['en'],
+    'an English chat must not pick up a second stoplist, or it loses real content words');
+  assert.ok(banglish.languages.includes('bn_latin'),
+    'a chat written half in romanised Bengali must be detected as such');
+
+  // The point of detecting it: Bengali function words stop counting as distinctive
+  // terms, so they cannot be what a conversation is "about".
+  const stop = core.compileRigor(lex).stopwordsBy.bn_latin;
+  for (const term of banglish.topicTerms) {
+    assert.ok(!stop.has(term), `"${term}" is a Bengali function word and must not be a topic term`);
+  }
+});
+
+test('language detection needs more than a stray word', () => {
+  // Two borrowed words in an otherwise English chat is not a second language, and
+  // treating it as one would strip English content words from every other message.
+  const head = '01/01/2026, 10:0';
+  const lines = [];
+  for (let i = 0; i < 40; i++) {
+    lines.push(`${head}${i % 6}, 10:${String(i).padStart(2, '0')} - Ravi: the council report says the figure is wrong`);
+  }
+  lines[3] = '01/01/2026, 10:03 - Asha: acha theek hai';
+  const res = A.analyse(core.parseChat(lines.join('\n')));
+  assert.deepEqual(res.rigor.languages, ['en']);
+});
+
+/* ----------------------------------------------- scoping to the argument */
+
+test('rigor scores the arguments in a chat, not the small talk around them', () => {
+  const G = analyse('sample_banglish_mixed.txt').rigor;
+  assert.ok(G.applies, 'this fixture contains two arguments and they should be found');
+  assert.strictEqual(G.episodesScored, 2, 'exactly the two argument episodes should be scored');
+  assert.ok(G.episodesScored < G.episodes, 'the casual conversations must be left out');
+  assert.ok(G.scoredMessages < 180 && G.scoredMessages > 40);
+
+  // Nothing from the flat-hunting conversation may reach the ledger: that was the
+  // whole complaint about it. These are claim-shaped sentences from episode 0.
+  const text = G.ledger.map(c => c.text).join('\n');
+  for (const stray of ['Barasat', 'auto route', 'last train', 'Meghna']) {
+    assert.ok(!text.includes(stray), `"${stray}" is logistics, not an argument, and must not be in the ledger`);
+  }
+  // ...and the argument itself must be.
+  assert.ok(/audit|report|response time|backlog/i.test(text), 'the argument should be what the ledger holds');
+
+  // Applicability is measured against what it scored, not against the whole chat.
+  assert.strictEqual(G.applicability.messages, G.scoredMessages);
+  assert.ok(!G.applicability.weak, 'scoped to the argument, the lens should now fit');
+});
+
+test('a chat with no argument in it reports that, instead of scoring one', () => {
+  // Friendly logistics: assertions, but nobody is contesting anything.
+  const lines = ['01/01/2026, 09:00 - Ravi: morning'];
+  for (let i = 0; i < 30; i++) {
+    const who = i % 2 ? 'Asha' : 'Ravi';
+    lines.push(`01/01/2026, 09:${String(10 + i).padStart(2, '0')} - ${who}: the bus leaves at 40 past and the station is two stops away`);
+  }
+  const G = A.analyse(core.parseChat(lines.join('\n'))).rigor;
+  assert.strictEqual(G.applies, false, 'no disagreement means no argument to score');
+  assert.strictEqual(G.episodesScored, 0);
+  assert.strictEqual(G.ledger.length, 0, 'a chat with no argument must not produce a claim ledger');
+  assert.strictEqual(G.unansweredTotal, 0);
+});
+
+test('a phatic question is not a debt, and not a challenge to a claim', () => {
+  const G = analyse('sample_banglish_mixed.txt').rigor;
+  const mix = G.questionMix;
+  assert.ok(mix.phatic > 0, 'a real chat is full of check-ins');
+  assert.ok(mix.rhetorical > 0, 'and of questions asked to score a point');
+  // Only substantive questions can go unanswered.
+  assert.ok(G.unansweredTotal <= mix.substantive);
+  for (const q of G.unanswered) {
+    assert.ok(!/^(wbu|kmn achis|treat debe)\b/i.test(q.text), `"${q.text}" is small talk, not an unanswered question`);
+  }
+});
+
+/* ------------------------------------------------------------------- cues */
+
+test('every rhetorical cue still matches its own examples, and not its counter-examples', () => {
+  // A cue family that silently stops matching shows up as a column of zeroes, which
+  // reads exactly like "nobody did this". These examples turn that into a failure.
+  const ex = lex._rhetoric_examples;
+  assert.ok(ex, 'lexicons.json must carry examples for the cue families');
+  const mk = (who, text) => `01/06/2026, 10:00 - ${who}: ${text}`;
+  for (const cue of Object.keys(core.RHET_LABELS)) {
+    assert.ok(ex[cue], `cue "${cue}" has no examples — add them or it can rot unnoticed`);
+    for (const t of ex[cue].positive) {
+      const r = A.analyse(core.parseChat([mk('A', t), mk('B', 'ok')].join('\n')));
+      assert.ok((r.stats[0].rhetoric[cue] || 0) > 0, `"${t}" should match ${cue} and does not`);
+    }
+    for (const t of ex[cue].negative) {
+      const r = A.analyse(core.parseChat([mk('A', t), mk('B', 'ok')].join('\n')));
+      assert.strictEqual(r.stats[0].rhetoric[cue] || 0, 0, `"${t}" must NOT match ${cue}`);
+    }
+  }
+});
+
+test('the cue lists still name no party, leader or policy', () => {
+  // Widening the cues is exactly when invariant 3 is easiest to break, because the
+  // real arguments they were drawn from are full of names.
+  const banned = /\b(congress|bjp|labour|tory|tories|republican|democrat|modi|trump|biden|gandhi|maga|brexit|abortion|vaccine|hindu|muslim|christian|tmc)\b/i;
+  for (const [cue, list] of Object.entries(lex.rhetoric)) {
+    for (const p of list) assert.ok(!banned.test(p), `${cue} names a side: ${p}`);
+  }
+  for (const [cue, sets] of Object.entries(lex._rhetoric_examples)) {
+    for (const t of [...sets.positive, ...sets.negative]) {
+      assert.ok(!banned.test(t), `${cue} example names a side: ${t}`);
+    }
+  }
 });
