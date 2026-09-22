@@ -8,10 +8,30 @@
   /* ---------------------------------------------------------------- parsing */
 
   const INVISIBLE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+  // The year is optional: selecting messages on a phone and copying them yields
+  // a bare 22/09 with no year at all.
+  const D = String.raw`(\d{1,4})[./-](\d{1,2})(?:[./-](\d{1,4}))?`;
+  const T = String.raw`(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?`;
   // The separator may be a hyphen, en dash or em dash, and the space after it is
   // optional: some exports and re-exports write 01:02 -Ravi: or 01:02-Ravi:.
-  const ANDROID = /^(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?\s*[-–—]\s*(.*)$/;
-  const IOS = /^\[(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?\]\s?(.*)$/;
+  const SEP = String.raw`\s*[-–—]\s*`;
+  const ANDROID = new RegExp(`^${D},?\\s+${T}${SEP}(.*)$`);
+  const IOS = new RegExp(`^\\[${D},?\\s+${T}\\]\\s?(.*)$`);
+  // Clock first: [10:07, 22/09/2026] Ravi: hello. WhatsApp writes the timestamp
+  // this way round on a number of locales, and it is the shape people paste most
+  // often. The capture groups come out clock-first, so headOf reorders them and
+  // everything downstream still sees one canonical head.
+  const IOS_TF = new RegExp(`^\\[${T},?\\s+${D}\\]\\s?(.*)$`);
+  const ANDROID_TF = new RegExp(`^${T},?\\s+${D}${SEP}(.*)$`);
+
+  /** Canonical head: [line, d1, d2, d3, hh, mm, ss, am/pm, rest]. */
+  function headOf(probe) {
+    const dateFirst = probe.match(IOS) || probe.match(ANDROID);
+    if (dateFirst) return dateFirst;
+    const m = probe.match(IOS_TF) || probe.match(ANDROID_TF);
+    return m ? [m[0], m[5], m[6], m[7], m[1], m[2], m[3], m[4], m[8]] : null;
+  }
+
   const MEDIA = /^(<media omitted>|<attached:.*>|(image|video|audio|sticker|gif|document|contact card) omitted|null)$/i;
   const DELETED = /^(this message was deleted|you deleted this message|message deleted)$/i;
   const EDITED = /\s*<this message was edited>\s*$/i;
@@ -31,7 +51,7 @@
       // indent somewhere, and a single leading space used to drop the line.
       const probe = line.replace(/^\s+/, '');
       if (probe) { seen++; if (!first) first = probe.slice(0, 120); }
-      const m = probe.match(IOS) || probe.match(ANDROID);
+      const m = headOf(probe);
       if (m) out.push({ head: m, rest: m[8] });
       else if (out.length) out[out.length - 1].rest += '\n' + line;
       if (onProgress && (i & 4095) === 4095) onProgress(i / lines.length);
@@ -54,19 +74,41 @@
     return 'DMY';
   }
 
-  function toDate(h, order) {
-    let d, mo, y;
-    if (order === 'YMD') { y = +h[1]; mo = +h[2]; d = +h[3]; }
+  /**
+   * @param {object} ctx carries the last year seen and the previous timestamp,
+   *   so a year-less line copied off a phone can be placed. Mutated as we go.
+   */
+  function toDate(h, order, ctx) {
+    let d, mo, y = null;
+    const bare = h[3] === undefined || h[3] === '';
+    if (bare) {
+      // No year in the line at all. YMD cannot apply to two components.
+      if (order === 'MDY') { mo = +h[1]; d = +h[2]; } else { d = +h[1]; mo = +h[2]; }
+    } else if (order === 'YMD') { y = +h[1]; mo = +h[2]; d = +h[3]; }
     else if (order === 'MDY') { mo = +h[1]; d = +h[2]; y = +h[3]; }
     else { d = +h[1]; mo = +h[2]; y = +h[3]; }
-    if (y < 100) y += 2000;
+    if (y !== null && y < 100) y += 2000;
     let hr = +h[4];
     const mi = +h[5], se = h[6] ? +h[6] : 0;
     const ap = h[7] ? h[7].replace(/[.\s]/g, '').toLowerCase() : '';
     if (ap === 'pm' && hr < 12) hr += 12;
     if (ap === 'am' && hr === 12) hr = 0;
+    if (y === null) {
+      // Inherit the last year we saw, or assume this year. An export runs
+      // forwards, so if that lands before the previous message the chat has
+      // crossed a new year and the year goes up by one.
+      y = ctx.year || new Date().getFullYear();
+      let dt = new Date(y, mo - 1, d, hr, mi, se);
+      if (isNaN(dt.getTime())) return null;
+      if (ctx.prev && dt < ctx.prev) dt = new Date(y + 1, mo - 1, d, hr, mi, se);
+      ctx.prev = dt;
+      return dt;
+    }
     const dt = new Date(y, mo - 1, d, hr, mi, se);
-    return isNaN(dt.getTime()) ? null : dt;
+    if (isNaN(dt.getTime())) return null;
+    ctx.year = y;
+    ctx.prev = dt;
+    return dt;
   }
 
   /**
@@ -89,8 +131,9 @@
     const messages = [];
     let system = 0;
     let clipped = 0;
+    const ctx = { year: null, prev: null };
     for (const r of rows) {
-      const date = toDate(r.head, order);
+      const date = toDate(r.head, order, ctx);
       if (!date) continue;
       if ((from && date < from) || (to && date > to)) { clipped++; continue; }
       const rest = r.rest;

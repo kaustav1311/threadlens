@@ -181,6 +181,32 @@ test('rigor reports how applicable it is, and admits when it is not', () => {
   assert.ok(!argued.weak, `the argument sample should be a good fit, got ${argued.fit.toFixed(2)}`);
 });
 
+test('the clock may come before the date, and the year may be missing entirely', () => {
+  // Selecting messages on a phone and copying them gives [10:07, 22/09]: clock
+  // first, and often no year at all. Both used to parse as zero messages.
+  const body = 'Ravi: the report said the waiting list rose';
+  const full = core.parseChat('22/09/2026, 10:07 - ' + body).messages[0];
+  const flipped = core.parseChat('[10:07, 22/09/2026] ' + body).messages[0];
+  assert.ok(full && flipped, 'both shapes must parse');
+  assert.strictEqual(flipped.date.getTime(), full.date.getTime());
+  assert.strictEqual(flipped.author, 'Ravi');
+  assert.strictEqual(flipped.text, full.text);
+
+  const bare = core.parseChat('[10:07, 22/09] ' + body).messages[0];
+  assert.ok(bare, 'a year-less line must still parse');
+  assert.strictEqual(bare.date.getMonth(), 8);
+  assert.strictEqual(bare.date.getDate(), 22);
+  assert.strictEqual(bare.date.getHours(), 10);
+  assert.strictEqual(bare.date.getFullYear(), new Date().getFullYear());
+
+  // A copied chat runs forwards, so December then January is the next year.
+  const ny = core.parseChat('[22:10, 30/12] Ravi: see you next year then my friend\n'
+    + '[00:05, 01/01] Asha: happy new year to you too my friend').messages;
+  assert.strictEqual(ny.length, 2);
+  assert.ok(ny[1].date > ny[0].date, 'a year-less chat must not jump backwards');
+  assert.strictEqual(ny[1].date.getFullYear(), ny[0].date.getFullYear() + 1);
+});
+
 test('a clip narrows the conversation before anything is scored', () => {
   const t = fs.readFileSync(path.join(root, 'samples/rigor_left_vs_right.txt'), 'utf8');
   const all = core.parseChat(t);

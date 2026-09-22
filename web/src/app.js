@@ -202,14 +202,14 @@
    * of a line that would work.
    */
   function unparseableError(n, first) {
-    const example = '21/09/2026, 01:02 - Ravi: message text';
     if (!n) return new Error('There was nothing to read — the box was empty.');
     return new Error(
-      `Read ${n} line${n === 1 ? '' : 's'}, but none of them look like a WhatsApp export. ` +
+      `Read ${n} line${n === 1 ? '' : 's'}, but none of them carry a timestamp. ` +
       (first ? `The first line reads: “${first.trim()}”. ` : '') +
-      `An exported line looks like: ${example} — with the date and time at the front. ` +
-      'Selecting messages inside WhatsApp and copying them does not include timestamps; ' +
-      'use the chat menu → More → Export chat → Without media instead.');
+      'Every line needs a clock at the front — any of ' +
+      '“21/09/2026, 01:02 - Ravi: text”, “[01:02, 21/09/2026] Ravi: text” or “[21/09, 01:02] Ravi: text”. ' +
+      'If yours has none, the text was copied from the message bubbles rather than the chat itself: ' +
+      'use the chat menu → More → Export chat → Without media.');
   }
 
   function assertParsed(parsed) {

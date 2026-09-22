@@ -2,6 +2,7 @@
 import json
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -194,6 +195,30 @@ def test_parser_survives_realistic_paste():
         ("indented", "   21/09/2026, 01:02 - Ravi: hello there friend\n21/09/2026, 01:05 - Asha: hi back"),
         ("no space after dash", "21/09/2026, 01:02 -Ravi: hello there friend\n21/09/2026, 01:05 -Asha: hi back"),
         ("em dash", "21/09/2026, 01:02 — Ravi: hello there friend\n21/09/2026, 01:05 — Asha: hi back"),
+        ("clock first", "[01:02, 21/09/2026] Ravi: hello there friend\n[01:05, 21/09/2026] Asha: hi back"),
+        ("no year", "[01:02, 21/09] Ravi: hello there friend\n[01:05, 21/09] Asha: hi back"),
+        ("date first bracket", "[21/09/2026, 01:02] Ravi: hello there friend\n[21/09/2026, 01:05] Asha: hi back"),
     ]:
         p = parse_chat(text)
         assert len(p["messages"]) == 2, f"{label} parsed {len(p['messages'])} messages"
+
+
+def test_clock_first_and_year_less_lines_land_on_the_same_date():
+    """Selecting messages on a phone and copying them gives [10:07, 22/09] with
+    the clock in front and no year at all. It must read as the same instant."""
+    full = parse_chat("22/09/2026, 10:07 - Ravi: the report said the waiting list rose")["messages"][0]
+    flipped = parse_chat("[10:07, 22/09/2026] Ravi: the report said the waiting list rose")["messages"][0]
+    assert flipped.date == full.date and flipped.author == "Ravi" and flipped.text == full.text
+    bare = parse_chat("[10:07, 22/09] Ravi: the report said the waiting list rose")["messages"][0]
+    assert (bare.date.month, bare.date.day, bare.date.hour) == (9, 22, 10)
+    assert bare.date.year == datetime.now().year
+
+
+def test_year_less_chat_rolls_forward_across_new_year():
+    """A copied chat runs forwards, so December followed by January is the next
+    year, not a jump eleven months backwards."""
+    msgs = parse_chat("[22:10, 30/12] Ravi: see you next year then my friend\n"
+                      "[00:05, 01/01] Asha: happy new year to you too my friend")["messages"]
+    assert len(msgs) == 2
+    assert msgs[1].date > msgs[0].date
+    assert msgs[1].date.year == msgs[0].date.year + 1

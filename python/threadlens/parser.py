@@ -8,10 +8,30 @@ from dataclasses import dataclass
 from datetime import datetime
 
 INVISIBLE = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
-_DT = r"(\d{1,4})[./-](\d{1,2})[./-](\d{1,4}),?\s+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?"
+# The year is optional: selecting messages on a phone and copying them yields a
+# bare 22/09 with no year at all.
+_D = r"(\d{1,4})[./-](\d{1,2})(?:[./-](\d{1,4}))?"
+_T = r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*([AaPp]\.?\s?[Mm]\.?)?"
 # Hyphen, en dash or em dash, and the space after the separator is optional.
-ANDROID = re.compile(r"^" + _DT + r"\s*[-–—]\s*(.*)$")
-IOS = re.compile(r"^\[" + _DT + r"\]\s?(.*)$")
+_SEP = r"\s*[-–—]\s*"
+ANDROID = re.compile(r"^" + _D + r",?\s+" + _T + _SEP + r"(.*)$")
+IOS = re.compile(r"^\[" + _D + r",?\s+" + _T + r"\]\s?(.*)$")
+# Clock first: [10:07, 22/09/2026] Ravi: hello. WhatsApp writes the timestamp this
+# way round on a number of locales, and it is the shape people paste most often.
+IOS_TF = re.compile(r"^\[" + _T + r",?\s+" + _D + r"\]\s?(.*)$")
+ANDROID_TF = re.compile(r"^" + _T + r",?\s+" + _D + _SEP + r"(.*)$")
+
+
+def _head(probe):
+    """Canonical head: ((d1, d2, d3, hh, mm, ss, am/pm), rest)."""
+    m = IOS.match(probe) or ANDROID.match(probe)
+    if m:
+        return m.groups()[:7], m.group(8)
+    m = IOS_TF.match(probe) or ANDROID_TF.match(probe)
+    if not m:
+        return None
+    g = m.groups()
+    return (g[4], g[5], g[6], g[0], g[1], g[2], g[3]), g[7]
 MEDIA = re.compile(r"^(<media omitted>|<attached:.*>|(image|video|audio|sticker|gif|document|contact card) omitted|null)$", re.I)
 DELETED = re.compile(r"^(this message was deleted|you deleted this message|message deleted)$", re.I)
 EDITED = re.compile(r"\s*<this message was edited>\s*$", re.I)
@@ -47,14 +67,23 @@ def _order(heads) -> str:
     return "MDY" if mdy > dmy else "DMY"
 
 
-def _date(h, order):
-    if order == "YMD":
+def _date(h, order, ctx):
+    """`ctx` carries the last year seen and the previous timestamp, so a
+    year-less line copied off a phone can be placed. Mutated as we go."""
+    y = None
+    if not h[2]:
+        # No year in the line at all. YMD cannot apply to two components.
+        if order == "MDY":
+            mo, d = int(h[0]), int(h[1])
+        else:
+            d, mo = int(h[0]), int(h[1])
+    elif order == "YMD":
         y, mo, d = int(h[0]), int(h[1]), int(h[2])
     elif order == "MDY":
         mo, d, y = int(h[0]), int(h[1]), int(h[2])
     else:
         d, mo, y = int(h[0]), int(h[1]), int(h[2])
-    if y < 100:
+    if y is not None and y < 100:
         y += 2000
     hr, mi, se = int(h[3]), int(h[4]), int(h[5] or 0)
     ap = re.sub(r"[.\s]", "", h[6] or "").lower()
@@ -62,10 +91,26 @@ def _date(h, order):
         hr += 12
     if ap == "am" and hr == 12:
         hr = 0
+    if y is None:
+        # Inherit the last year we saw, or assume this year. An export runs
+        # forwards, so if that lands before the previous message the chat has
+        # crossed a new year and the year goes up by one.
+        y = ctx["year"] or datetime.now().year
+        try:
+            dt = datetime(y, mo, d, hr, mi, se)
+        except ValueError:
+            return None
+        if ctx["prev"] and dt < ctx["prev"]:
+            dt = datetime(y + 1, mo, d, hr, mi, se)
+        ctx["prev"] = dt
+        return dt
     try:
-        return datetime(y, mo, d, hr, mi, se)
+        dt = datetime(y, mo, d, hr, mi, se)
     except ValueError:
         return None
+    ctx["year"] = y
+    ctx["prev"] = dt
+    return dt
 
 
 def _as_dt(v, end_of_day=False):
@@ -102,17 +147,18 @@ def parse_chat(text: str, date_order: str = "auto", frm=None, to=None):
             seen += 1
             if not first:
                 first = probe[:120]
-        m = IOS.match(probe) or ANDROID.match(probe)
+        m = _head(probe)
         if m:
-            rows.append([m.groups()[:7], m.group(8)])
+            rows.append([m[0], m[1]])
         elif rows:
             rows[-1][1] += "\n" + line
     order = _order([r[0] for r in rows]) if date_order == "auto" else date_order
     frm = _as_dt(frm)
     to = _as_dt(to, end_of_day=True)
     messages, system, clipped = [], 0, 0
+    ctx = {"year": None, "prev": None}
     for head, rest in rows:
-        date = _date(head, order)
+        date = _date(head, order, ctx)
         if not date:
             continue
         if (frm and date < frm) or (to and date > to):
