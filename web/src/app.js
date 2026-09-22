@@ -36,7 +36,19 @@
   const initial = n => (n.trim()[0] || '?').toUpperCase();
   const dateTime = d => new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-  const state = { raw: null, source: '', isSample: false, lens: 'debate', res: null, busy: false };
+  const state = {
+    raw: null, source: '', isSample: false, lens: 'debate', res: null, busy: false,
+    clip: null,          // {from,to} ISO dates, applied at parse time
+    fullRange: null,     // the unclipped span, so the clip UI knows its bounds
+    lensPinned: false,   // true once the user picks a lens themselves
+  };
+
+  /* Which lens opens first, given what the user says this chat is. It changes
+     what is surfaced, never how anything is scored. */
+  const LENS_FOR_RELATION = {
+    partner: 'personal', family: 'personal', friend: 'overview',
+    colleague: 'work', group: 'overview', stranger: 'rigor',
+  };
 
   /* --------------------------------------------------------------- input */
 
@@ -129,7 +141,7 @@
       try {
         if (d.type === 'init') { A = ThreadlensCore.createAnalyzer(d.lex, d.vader); self.postMessage({ type: 'ready' }); return; }
         var post = function (phase, pct) { self.postMessage({ type: 'progress', phase: phase, pct: pct }); };
-        var parsed = ThreadlensCore.parseChat(d.text, { dateOrder: d.dateOrder, onProgress: function (p) { post('Reading messages', p * 0.35); } });
+        var parsed = ThreadlensCore.parseChat(d.text, { dateOrder: d.dateOrder, from: d.from, to: d.to, onProgress: function (p) { post('Reading messages', p * 0.35); } });
         if (!parsed.messages.length) throw new Error('UNPARSEABLE:' + (parsed.lineCount || 0) + ':' + (parsed.firstLine || ''));
         if (parsed.messages.length > d.maxMessages) throw new Error('This chat has ' + parsed.messages.length.toLocaleString() + ' messages and the limit is ' + d.maxMessages.toLocaleString() + '. Trim the export and try again.');
         var res = A.analyse(parsed, { anonymise: d.anonymise, onProgress: function (p) { post('Scoring every message', 0.35 + p * 0.5); } });
@@ -144,10 +156,14 @@
   function getWorker() {
     if (workerP) return workerP;
     workerP = new Promise((resolve, reject) => {
-      if (typeof Worker !== 'function' || !window.TL_CORE_SRC || !window.URL || !URL.createObjectURL) return reject(new Error('no worker'));
+      // The worker's copy of the core is the page's own script#tl-core, read back
+      // out of the DOM. Embedding it a second time as a string cost ~38 KB.
+      const coreTag = document.getElementById('tl-core');
+      const coreSrc = coreTag && coreTag.textContent;
+      if (typeof Worker !== 'function' || !coreSrc || !window.URL || !URL.createObjectURL) return reject(new Error('no worker'));
       let w;
       try {
-        w = new Worker(URL.createObjectURL(new Blob([window.TL_CORE_SRC + HARNESS], { type: 'text/javascript' })));
+        w = new Worker(URL.createObjectURL(new Blob([coreSrc + HARNESS], { type: 'text/javascript' })));
       } catch (e) { return reject(e); }
       const fail = e => reject(e instanceof Error ? e : new Error('worker failed'));
       w.addEventListener('error', fail, { once: true });
@@ -172,7 +188,10 @@
         else resolve(d.res);
       };
       w.addEventListener('message', onMsg);
-      w.postMessage({ type: 'run', text, dateOrder: $('#order').value, anonymise: $('#anon').checked, maxMessages: MAX_MESSAGES });
+      w.postMessage({
+        type: 'run', text, dateOrder: $('#order').value, anonymise: $('#anon').checked,
+        maxMessages: MAX_MESSAGES, from: state.clip && state.clip.from, to: state.clip && state.clip.to,
+      });
     });
   }
 
@@ -200,7 +219,7 @@
 
   function analyseHere(text) {
     setProgress(0.05, 'Reading messages');
-    const parsed = assertParsed(core.parseChat(text, { dateOrder: $('#order').value }));
+    const parsed = assertParsed(core.parseChat(text, { dateOrder: $('#order').value, from: state.clip && state.clip.from, to: state.clip && state.clip.to }));
     if (parsed.messages.length > MAX_MESSAGES) throw new Error(`This chat has ${parsed.messages.length.toLocaleString()} messages and the limit is ${MAX_MESSAGES.toLocaleString()}. Trim the export and try again.`);
     setProgress(0.6, 'Scoring every message');
     return analyzer.analyse(parsed, { anonymise: $('#anon').checked });
@@ -225,6 +244,10 @@
         res = analyseHere(text);
       }
       state.res = res;
+      if (!state.clip) state.fullRange = { from: res.range.from, to: res.range.to };
+      // Honour what the user said this chat is, until they pick a lens themselves.
+      const rel = $('#relation').value;
+      if (!state.lensPinned && LENS_FOR_RELATION[rel]) state.lens = LENS_FOR_RELATION[rel];
       setProgress(null);
       render();
       if (!isSample) {
@@ -319,9 +342,15 @@
         el('b', null, 'Your chat'),
         el('span', null, `Read inside this tab and never uploaded. ${res.totals.messages.toLocaleString()} messages scored locally.`)));
 
+    const rel = $('#relation').value;
     R.append(el('p', { class: 'statusline' },
-      `> threadlens --lens ${lens} --source ${state.isSample ? 'sample' : 'local'} --messages ${res.totals.messages}`,
+      `> threadlens --lens ${lens} --source ${state.isSample ? 'sample' : 'local'}`
+      + (rel ? ` --with ${rel}` : '')
+      + (state.clip ? ' --clip' : '')
+      + ` --messages ${res.totals.messages}`,
       el('span', { class: 'caret', 'aria-hidden': 'true' })));
+
+    if (!state.isSample) R.append(clipBar(res));
 
     R.append(el('div', { class: 'banner' },
       el('div', { class: 'hrow' },
@@ -393,6 +422,86 @@
   function download(name, text, type) {
     const a = el('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
     document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+
+  /* ------------------------------------------------------------------ clip */
+
+  const isoDay = d => new Date(d).toISOString().slice(0, 10);
+
+  /**
+   * Windows worth offering, computed from the chat itself rather than from the
+   * calendar: the last 30 and 90 days OF THIS CHAT, its busiest stretch, and the
+   * week it got hottest. "Last 30 days" relative to today is useless for an
+   * export of an argument that finished in March.
+   */
+  function clipPresets(res) {
+    const days = res.series.map(d => d.day);
+    if (!days.length) return [];
+    const last = days[days.length - 1], first = days[0];
+    const minus = (day, n) => isoDay(new Date(new Date(day).getTime() - n * 864e5));
+    const out = [{ id: 'all', label: 'Everything', from: null, to: null }];
+    const span = (new Date(last) - new Date(first)) / 864e5;
+    if (span > 30) out.push({ id: '30', label: 'Last 30 days of the chat', from: minus(last, 30), to: null });
+    if (span > 90) out.push({ id: '90', label: 'Last 90 days of the chat', from: minus(last, 90), to: null });
+
+    // Busiest 30-day window and hottest 7-day window, by a simple slide over the
+    // day series. Both are named by what they are, not by a date the user has to decode.
+    const total = d => res.people.reduce((a, p) => a + (d.per[p] ? d.per[p].n : 0), 0);
+    const heat = d => {
+      const vals = res.people.map(p => (d.per[p] ? d.per[p].heat : null)).filter(v => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+    };
+    const window = (size, score) => {
+      let best = null;
+      for (let i = 0; i < res.series.length; i++) {
+        const from = res.series[i].day, to = isoDay(new Date(new Date(from).getTime() + (size - 1) * 864e5));
+        let s = 0, n = 0;
+        for (let j = i; j < res.series.length && res.series[j].day <= to; j++) { s += score(res.series[j]); n++; }
+        if (n > 1 && (!best || s > best.s)) best = { s, from, to };
+      }
+      return best;
+    };
+    if (span > 35) {
+      const b = window(30, total);
+      if (b) out.push({ id: 'busiest', label: 'Its busiest month', from: b.from, to: b.to });
+    }
+    if (span > 10) {
+      const h = window(7, heat);
+      if (h && h.s > 0) out.push({ id: 'hottest', label: 'The week it got worst', from: h.from, to: h.to });
+    }
+    return out;
+  }
+
+  function clipBar(res) {
+    const presets = clipPresets(res);
+    const bar = el('div', { class: 'clipbar' });
+    const from = el('input', { type: 'date', id: 'clip-from', 'aria-label': 'Analyse from', value: (state.clip && state.clip.from) || '' });
+    const to = el('input', { type: 'date', id: 'clip-to', 'aria-label': 'Analyse until', value: (state.clip && state.clip.to) || '' });
+    if (state.fullRange) {
+      for (const inp of [from, to]) { inp.min = isoDay(state.fullRange.from); inp.max = isoDay(state.fullRange.to); }
+    }
+    const apply = (f, t) => {
+      state.clip = (f || t) ? { from: f || null, to: t || null } : null;
+      if (state.raw) ingest(async () => state.raw, state.source, state.isSample);
+    };
+
+    const sel = el('select', { 'aria-label': 'Clip to a window', onchange: e => {
+      const p = presets.find(x => x.id === e.target.value);
+      if (p) apply(p.from, p.to);
+    } });
+    for (const p of presets) sel.append(el('option', { value: p.id }, p.label));
+
+    bar.append(
+      el('span', { class: 'kbd' }, 'Clip'),
+      sel,
+      el('span', { class: 'clip-dates' }, from, el('span', { class: 'muted' }, 'to'), to),
+      el('button', { class: 'btn tiny', type: 'button', onclick: () => apply(from.value, to.value) }, 'Apply'),
+      state.clip ? el('button', { class: 'btn tiny ghost', type: 'button', onclick: () => apply(null, null) }, 'Clear clip') : null,
+      el('span', { class: 'clip-note muted' },
+        state.clip
+          ? `Clipped: ${res.totals.messages.toLocaleString()} messages in this window.`
+          : `Whole chat: ${res.totals.messages.toLocaleString()} messages.`));
+    return bar;
   }
 
   /* ------------------------------------------------------------ scorecards */
@@ -500,13 +609,28 @@
 
   function rigorKnowhow(res) {
     const G = res.rigor;
-    return el('div', { class: 'knowhow' },
+    const A = G.applicability;
+    const box = el('div', { class: 'knowhow' });
+    // Rigor asks "did you source that?". On a chat with almost no factual claims
+    // that is the wrong question, and saying so is more honest than a number.
+    if (A && A.weak) {
+      box.append(
+        el('h4', null, 'Careful — this may be the wrong lens'),
+        el('p', null, `Only ${A.claims} factual claim${A.claims === 1 ? '' : 's'} in ${A.messages.toLocaleString()} messages `
+          + `(${A.claimsPerMessage.toFixed(2)} per message). Rigor is built for an argument where people assert things and `
+          + 'are asked to back them up. This reads more like conversation, so Sourcing and Answering will be thin and the '
+          + 'scores below are not worth much. Overview or Personal will tell you more.'));
+    }
+    box.append(
       el('h4', null, 'How to read this'),
       el('ul', null,
         el('li', null, 'The score is about conduct, not correctness. A well-argued case for something wrong still scores well, and that is deliberate.'),
         el('li', null, `The opening topic was read as: ${G.topicTerms.slice(0, 8).join(', ')}. Drift is measured against that, so a chat that legitimately moves on will show drift.`),
         el('li', null, 'Components marked n/a did not apply — nobody asked that person a question, say — so they drop out of the average rather than scoring zero.'),
+        el('li', null, `Split into ${G.episodes} conversation${G.episodes === 1 ? '' : 's'} at six-hour gaps. Drift is measured against the start of each one, not against day one of the whole chat.`),
+        el('li', null, 'Conduct and Calibration count the share of messages that carried the thing, not words per 100 — being brief is neither rewarded nor punished.'),
         el('li', null, 'Nothing here checks whether a claim is true. The ledger tells you what to go and check.')));
+    return box;
   }
 
   /* -------------------------------------------------------------- findings */
@@ -777,8 +901,13 @@
     if (t && /\d[:.]\d{2}/.test(t)) { showFileCard('Pasted text', t.length); ingest(async () => t, 'Pasted conversation'); }
   });
   ['#anon', '#order'].forEach(s => $(s).addEventListener('change', rerun));
+  $('#relation').addEventListener('change', () => {
+    const l = LENS_FOR_RELATION[$('#relation').value];
+    if (l && !state.lensPinned) state.lens = l;
+    if (state.res) render();
+  });
   $('#showq').addEventListener('change', () => { if (state.res) render(); });
-  document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { state.lens = b.dataset.lens; render(); }));
+  document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { state.lens = b.dataset.lens; state.lensPinned = true; render(); }));
   addEventListener('resize', movePill);
 
   // A lens can be deep-linked (#rigor). Only exact lens names are honoured, so the

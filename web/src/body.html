@@ -47,6 +47,17 @@
           <div class="row tight"><button class="btn primary" id="paste-go" type="button">Analyse this</button></div>
         </div>
         <div class="opts">
+          <label>This chat is with
+            <select id="relation" title="Sets which lens opens first and which findings are worth surfacing. It never changes how anything is scored.">
+              <option value="">Not saying</option>
+              <option value="partner">A partner</option>
+              <option value="family">Family</option>
+              <option value="friend">A friend</option>
+              <option value="colleague">A colleague</option>
+              <option value="group">A group</option>
+              <option value="stranger">Someone I argue with online</option>
+            </select>
+          </label>
           <label><input type="checkbox" id="anon"> Hide names</label>
           <label>Dates <select id="order"><option value="auto">Auto</option><option value="DMY">DD/MM/YY</option><option value="MDY">MM/DD/YY</option><option value="YMD">YYYY/MM/DD</option></select></label>
           <label><input type="checkbox" id="showq" checked> Show quotes</label>

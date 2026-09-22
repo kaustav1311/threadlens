@@ -68,20 +68,55 @@ def _date(h, order):
         return None
 
 
-def parse_chat(text: str, date_order: str = "auto"):
+def _as_dt(v, end_of_day=False):
+    """Accept a date, a datetime or an ISO string. A bare date as `to` means the
+    whole of that day, which is what a person picking a date in a UI means."""
+    if v is None or isinstance(v, datetime):
+        return v
+    if isinstance(v, str):
+        # Test the ORIGINAL string for date-only, not the parsed value: a parsed
+        # datetime always renders with a time, so this check never fired and a
+        # bare `to` date silently excluded that entire day.
+        date_only = len(v.strip()) == 10
+        dt = datetime.fromisoformat(v)
+        if end_of_day and date_only:
+            return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+    # a datetime.date
+    dt = datetime(v.year, v.month, v.day)
+    return dt.replace(hour=23, minute=59, second=59, microsecond=999999) if end_of_day else dt
+
+
+def parse_chat(text: str, date_order: str = "auto", frm=None, to=None):
+    """Parse an export. `frm`/`to` clip the conversation before anything is scored,
+    so rates, episodes, drift and the ledger are all computed on the clip."""
     rows = []
+    seen, first = 0, ""
     for line in str(text or "").split("\n"):
         line = _clean(line)
-        m = IOS.match(line) or ANDROID.match(line)
+        # Match on a left-trimmed copy but keep the original for continuation
+        # text: pasted exports almost always pick up an indent somewhere, and a
+        # single leading space used to drop the line entirely.
+        probe = line.lstrip()
+        if probe:
+            seen += 1
+            if not first:
+                first = probe[:120]
+        m = IOS.match(probe) or ANDROID.match(probe)
         if m:
             rows.append([m.groups()[:7], m.group(8)])
         elif rows:
             rows[-1][1] += "\n" + line
     order = _order([r[0] for r in rows]) if date_order == "auto" else date_order
-    messages, system = [], 0
+    frm = _as_dt(frm)
+    to = _as_dt(to, end_of_day=True)
+    messages, system, clipped = [], 0, 0
     for head, rest in rows:
         date = _date(head, order)
         if not date:
+            continue
+        if (frm and date < frm) or (to and date > to):
+            clipped += 1
             continue
         idx = rest.find(": ")
         name = rest[:idx] if idx > 0 else ""
@@ -93,7 +128,8 @@ def parse_chat(text: str, date_order: str = "auto"):
         body = EDITED.sub("", body).strip()
         kind = "media" if MEDIA.match(body) else "deleted" if DELETED.match(body) else "text"
         messages.append(Message(date, name.strip(), body if kind == "text" else "", kind, edited))
-    return {"messages": messages, "date_order": order, "system_lines": system}
+    return {"messages": messages, "date_order": order, "system_lines": system,
+            "line_count": seen, "first_line": first, "clipped": clipped}
 
 
 def read_export(data: bytes, filename: str = "") -> str:

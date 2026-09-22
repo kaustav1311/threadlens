@@ -125,3 +125,75 @@ test('rigor runs on every sample without throwing', () => {
     assert.ok(res.rigor.topicTerms.length > 0, f);
   }
 });
+
+/* ------------------------------------------------- rigor v2: what changed */
+
+const mk = (rows) => rows.map(([day, hh, mm, who, text]) =>
+  `${String(day).padStart(2, '0')}/06/2026, ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')} - ${who}: ${text}`).join('\n');
+
+test('conduct does not punish brevity: it counts messages, not words per 100', () => {
+  // The bug this replaces: per-100-words made a terse speaker with one insult
+  // look worse than a verbose speaker with five. Both people here are hostile in
+  // exactly one message of ten; one writes short messages and one writes long
+  // ones. Their Conduct must be the same.
+  const padding = 'the committee report from March 2026 set out the position at some length and in detail ';
+  const terse = [], windy = [];
+  for (let i = 0; i < 10; i++) {
+    terse.push([1 + i, 9, i, 'Terse', i === 0 ? 'you are an idiot' : 'the report says it rose']);
+    windy.push([1 + i, 9, i, 'Windy', (i === 0 ? 'you are an idiot ' : '') + padding + 'and the report says it rose']);
+  }
+  const a = A.analyse(core.parseChat(mk(terse))).rigor.people.Terse;
+  const b = A.analyse(core.parseChat(mk(windy))).rigor.people.Windy;
+  assert.ok(Math.abs(a.components.conduct - b.components.conduct) < 1e-9,
+    `conduct differed by verbosity alone: terse ${a.components.conduct}, windy ${b.components.conduct}`);
+  assert.strictEqual(a.hostileMessages, 1);
+  assert.strictEqual(b.hostileMessages, 1);
+});
+
+test('a chat is split into episodes, and drift is measured against each one', () => {
+  // Two conversations days apart about completely different things. Measured
+  // against a single global opening, the second would read as pure "drift";
+  // measured against its own opening it should not.
+  const rows = [];
+  for (let i = 0; i < 6; i++) rows.push([1, 9, i, i % 2 ? 'B' : 'A', 'the rent cap report said the waiting list rose in January']);
+  for (let i = 0; i < 6; i++) rows.push([9, 9, i, i % 2 ? 'B' : 'A', 'the cricket selection panel dropped the opening batsman yesterday']);
+  const res = A.analyse(core.parseChat(mk(rows)));
+  assert.ok(res.rigor.episodes >= 2, `expected at least 2 episodes, got ${res.rigor.episodes}`);
+  assert.ok(res.rigor.episodeTopics.length >= 2);
+  // the two episodes must have genuinely different topics
+  const [e1, e2] = res.rigor.episodeTopics;
+  assert.strictEqual(e1.filter(t => e2.includes(t)).length, 0, 'episode topics should not overlap here');
+  // and the second conversation must not be scored as maximal drift
+  const late = res.rigor.drift.filter(d => new Date(d.date).getDate() === 9);
+  assert.ok(late.length && late.every(d => d.drift < 0.95),
+    'a later conversation on its own topic should not read as total drift');
+});
+
+test('rigor reports how applicable it is, and admits when it is not', () => {
+  const chatty = [];
+  for (let i = 0; i < 30; i++) chatty.push([1 + (i % 20), 9, i % 60, i % 2 ? 'B' : 'A', 'haha ok sure see you then']);
+  const casual = A.analyse(core.parseChat(mk(chatty))).rigor.applicability;
+  assert.strictEqual(casual.claims, 0);
+  assert.ok(casual.weak, 'a chat with no factual claims must flag Rigor as a weak fit');
+
+  const argued = analyse('rigor_left_vs_right.txt').rigor.applicability;
+  assert.ok(argued.claims > 10, 'the argument sample should yield claims');
+  assert.ok(!argued.weak, `the argument sample should be a good fit, got ${argued.fit.toFixed(2)}`);
+});
+
+test('a clip narrows the conversation before anything is scored', () => {
+  const t = fs.readFileSync(path.join(root, 'samples/rigor_left_vs_right.txt'), 'utf8');
+  const all = core.parseChat(t);
+  const firstDay = core.parseChat(t, { from: '2026-04-04', to: '2026-04-04' });
+  const secondDay = core.parseChat(t, { from: '2026-04-05' });
+  assert.ok(firstDay.messages.length > 0 && secondDay.messages.length > 0);
+  assert.strictEqual(firstDay.messages.length + secondDay.messages.length, all.messages.length);
+  // `to` as a bare date means the whole of that day
+  assert.ok(firstDay.messages.every(m => m.date.getDate() === 4));
+  assert.ok(secondDay.messages.every(m => m.date.getDate() === 5));
+  // and the clip must reach the scoring, not just the message list
+  const clipped = A.analyse(secondDay);
+  assert.ok(clipped.totals.messages < A.analyse(all).totals.messages);
+  assert.strictEqual(all.clipped, 0);
+  assert.ok(firstDay.clipped > 0);
+});

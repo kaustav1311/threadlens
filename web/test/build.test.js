@@ -46,7 +46,8 @@ test('every script in the page is inline and hash-pinned', () => {
   const html = dist();
   assert.ok(!/<script[^>]+src=/i.test(html), 'dist must not reference an external script');
   const hashes = (html.match(/'sha256-[A-Za-z0-9+/=]+'/g) || []).length;
-  const inline = (html.match(/<script>/g) || []).length;
+  // one of them is <script id="tl-core">, which the Worker reads its source from
+  const inline = (html.match(/<script(?:\s[^>]*)?>/g) || []).length;
   assert.strictEqual(hashes, inline, `${inline} inline scripts but ${hashes} hashes`);
 });
 
@@ -97,13 +98,16 @@ test('the page declares the Rigor lens and the relationship keywords it should b
 
 /* ------------------------------------------ the worker copy of core.js */
 
-test('the embedded worker source is valid JS and still exports the core', () => {
-  // build.mjs strips comments from TL_CORE_SRC to fit the page budget. A bad
-  // strip would leave the worker broken and the app would silently fall back to
-  // the main thread, which is exactly the kind of failure nobody notices.
-  const m = dist().match(/window\.TL_CORE_SRC=("(?:\\.|[^"\\])*")/);
-  assert.ok(m, 'TL_CORE_SRC missing from dist');
-  const src = JSON.parse(m[1]);
+test('the worker source is valid JS and still exports the core', () => {
+  // The worker is built from the page's own <script id="tl-core">, and its
+  // comments are stripped to fit the budget. A bad strip would leave the worker
+  // broken and the app would fall back to the main thread -- exactly the kind of
+  // failure nobody notices.
+  const html = dist();
+  const m = html.match(/<script id="tl-core">([\s\S]*?)<\/script>/);
+  assert.ok(m, 'no <script id="tl-core"> in dist -- the worker has nothing to read');
+  const src = m[1];
+  assert.ok(!html.includes('window.TL_CORE_SRC'), 'core.js must not also be embedded as a string');
 
   assert.ok(!/^\s*\/\//m.test(src), 'whole-line comments should have been stripped');
   const fake = {};

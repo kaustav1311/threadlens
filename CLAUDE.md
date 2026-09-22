@@ -31,8 +31,9 @@ counts, per-100-word rates, heat, sentiment, moral words, rhetoric regexes, repl
 lenses never pay for it. Touching `res.rigor` computes it once and caches it.
 
 Large exports (≥400k characters) are analysed in a **Web Worker** built from a Blob of `core.js`, which is why the
-CSP allows `worker-src blob:`. `window.TL_CORE_SRC` is that same file inlined as a string. If workers are blocked
-the page falls back to the main thread and the result is identical.
+CSP allows `worker-src blob:`. The worker's copy of the source is read back off the page's own
+`<script id="tl-core">` tag — it is *not* embedded a second time. If workers are blocked the page falls back to
+the main thread and the result is identical.
 
 ## Commands
 - `make test`: builds, then JS tests (`node --test "web/test/*.test.js"`) + Python tests (`cd python && pytest`)
@@ -57,12 +58,31 @@ the page falls back to the main thread and the result is identical.
 6. `prefers-reduced-motion` must disable all animation — and every animated element must still land on its final
    state, not sit at zero. Asserted in `web/test/build.test.js`.
 
+## Scoring decisions worth not re-litigating
+- **Per-100-words normalises a description, never a deduction.** Conduct and Calibration use *incidence* (the
+  share of a person's messages carrying the thing). The old per-100-word rule made a terse speaker with one
+  insult score worse than a verbose one with five. `test_conduct_counts_messages_not_words` pins it.
+- **Drift is scoped to an episode**, split at the same 6-hour gap that defines "started a conversation". One
+  global baseline turned a months-long chat's drift into a measure of elapsed time. Goalpost shifts only count
+  inside one episode.
+- **Rigor reports its own applicability** (`rigor.applicability`): claims per message against a 0.35 target. On
+  a chat with no claims the UI says the lens is wrong rather than printing a confident zero.
+- **The relationship input changes which lens opens and what is surfaced. It never changes a score.** Keep it
+  that way: the moment it touches scoring, the tool takes a side.
+- **Clipping happens in `parseChat`, not after.** `{from, to}` (JS) / `frm=, to=` (Python) so rates, episodes,
+  drift and the ledger are all computed on the clip. A bare `to` date means the whole of that day.
+
 ## Gotchas already paid for
 - A class with `display` beats the UA's `[hidden] { display: none }`. style.css carries a global `[hidden]` rule;
   without it `el.hidden = true` silently does nothing on `.progress` and friends.
 - `%` is not a word character, so `\d+\s*%\b` never matches "6% a year". Percent gets its own regex branch.
 - `/\b(jan|feb|mar|…)[a-z]*\b/` matches "market" and "maybe". Dates must look like dates.
 - Answer matching by raw shared-word count returns 0 for almost every real chat reply; overlap is IDF-weighted.
+- A leading space used to drop an exported line entirely (the `^` anchor). Pasted text nearly always has one,
+  which was most of "paste doesn't work". Matching is done on a left-trimmed copy.
+- The separator may be `-`, an en dash or an em dash, with or without a space after it.
+- `core.js` is emitted **once**, as `<script id="tl-core">`; app.js reads its own source off that tag to build
+  the Worker. Embedding it a second time as a string cost ~38 KB and kept breaking the page budget.
 
 ## Deployment
 - **Web:** push to `main` → `.github/workflows/pages.yml` runs tests, builds, and deploys `dist/index.html` to GitHub Pages

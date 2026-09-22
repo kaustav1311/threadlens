@@ -72,17 +72,27 @@
   /**
    * Parse a WhatsApp export (Android or iOS, 12h or 24h, any locale separator).
    * @param {string} text
-   * @param {{dateOrder?: 'auto'|'DMY'|'MDY'|'YMD', onProgress?: (fraction:number)=>void}} [opts]
+   * @param {{dateOrder?: 'auto'|'DMY'|'MDY'|'YMD', onProgress?: (fraction:number)=>void,
+   *           from?: Date|string, to?: Date|string}} [opts]
+   *   from/to clip the conversation to a window. Clipping happens here, before
+   *   any scoring, so rates, episodes, drift and the ledger are all computed on
+   *   the clip rather than filtered afterwards.
    */
   function parseChat(text, opts) {
     opts = opts || {};
+    const from = opts.from ? new Date(opts.from) : null;
+    // `to` is inclusive of the whole day when a bare date is given.
+    let to = opts.to ? new Date(opts.to) : null;
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test(String(opts.to))) to = new Date(to.getTime() + 864e5 - 1);
     const rows = tokenizeLines(String(text || ''), opts.onProgress);
     const order = !opts.dateOrder || opts.dateOrder === 'auto' ? detectDateOrder(rows.map(r => r.head)) : opts.dateOrder;
     const messages = [];
     let system = 0;
+    let clipped = 0;
     for (const r of rows) {
       const date = toDate(r.head, order);
       if (!date) continue;
+      if ((from && date < from) || (to && date > to)) { clipped++; continue; }
       const rest = r.rest;
       const idx = rest.indexOf(': ');
       const nameCand = idx > 0 ? rest.slice(0, idx) : '';
@@ -93,7 +103,11 @@
       const kind = MEDIA.test(body) ? 'media' : DELETED.test(body) ? 'deleted' : 'text';
       messages.push({ date, author: nameCand.trim(), text: kind === 'text' ? body : '', kind, edited });
     }
-    return { messages, dateOrder: order, systemLines: system, lineCount: rows.lineCount || 0, firstLine: rows.firstLine || '' };
+    return {
+      messages, dateOrder: order, systemLines: system,
+      lineCount: rows.lineCount || 0, firstLine: rows.firstLine || '',
+      clipped, clip: from || to ? { from: from || null, to: to || null } : null,
+    };
   }
 
   /* -------------------------------------------------------------- lexicons */
@@ -378,6 +392,12 @@
     selfCorrection: 'Explicitly correcting one’s own earlier claim (“I was wrong about…”, “scratch that”). Two corrections is full marks.',
   };
 
+  const EPISODE_GAP_HOURS = 6;     // the same gap that defines "started a conversation"
+  const EPISODE_OPENING = 6;       // messages of an episode that define its topic
+  const CONDUCT_ZERO = 0.3;        // share of messages carrying hostility at which Conduct hits 0
+  const RIGOR_FIT_FULL = 0.35;     // claims per message at which Rigor is fully applicable
+  const RIGOR_FIT_WEAK = 0.4;      // below this fit, the UI warns rather than asserting
+  const CALIBRATION_SPAN = 1.5;    // how far incidence must move to swing Calibration end to end
   const RIGOR_ANSWER_WINDOW = 6;   // messages after a question in which a reply still counts as answering it
   const RIGOR_MIN_CLAIM_WORDS = 6; // shorter sentences are too thin to call a claim
   const RIGOR_KEYWORD_MIN = 3;     // content words must be this long to count for overlap
@@ -442,6 +462,22 @@
 
   function overlapCount(a, b) { let n = 0; for (const t of a) if (b.has(t)) n++; return n; }
 
+  /**
+   * Split a chat into episodes at the same six-hour gap that defines "started a
+   * conversation". Measuring drift against one global opening is meaningless once
+   * a chat spans weeks -- it just measures elapsed time.
+   * @returns {number[]} episode index per message
+   */
+  function episodeOf(msgs) {
+    const out = new Array(msgs.length);
+    let ep = 0;
+    for (let i = 0; i < msgs.length; i++) {
+      if (i && (msgs[i].date - msgs[i - 1].date) / 36e5 >= EPISODE_GAP_HOURS) ep++;
+      out[i] = ep;
+    }
+    return out;
+  }
+
   /** Keep at most `max` evenly spaced points: a 50k-point timeline renders no better than 400. */
   function downsample(arr, max) {
     if (arr.length <= max) return arr;
@@ -473,7 +509,9 @@
     // chat that array would dominate memory, and this pass is cheap.
     const toks = msgs.map(m => tokenize(m.text.toLowerCase()));
 
-    /* --- opening topic: TF-IDF over messages, so shared chatter words drop out --- */
+    /* --- topic and drift, scoped to a conversation episode --- */
+    const episode = episodeOf(msgs);
+    const episodeCount = msgs.length ? episode[msgs.length - 1] + 1 : 0;
     const df = Object.create(null);
     const perMsgWords = msgs.map((m, i) => {
       const w = contentWords(toks[i], stop);
@@ -485,23 +523,41 @@
     const contentSets = perMsgWords.map(w => new Set(w));
     const N = Math.max(msgs.length, 1);
     const idf = t => Math.log(1 + N / (1 + (df[t] || 0)));
-    const tf = Object.create(null);
-    for (let i = 0; i < Math.min(TOPIC_OPENING_MSGS, msgs.length); i++)
-      for (const t of perMsgWords[i]) tf[t] = (tf[t] || 0) + 1;
-    const topic = Object.keys(tf)
-      .map(t => ({ t, w: tf[t] * idf(t) }))
-      .sort((a, b) => b.w - a.w || (a.t < b.t ? -1 : 1))
-      .slice(0, TOPIC_TERMS);
-    const topicW = topic.reduce((a, x) => a + x.w, 0);
-    const topicIdx = Object.create(null);
-    for (const x of topic) topicIdx[x.t] = x.w;
+    /** Top terms of a slice of messages, by TF-IDF against the whole chat. */
+    const topicOf = (from, to, k) => {
+      const tf = Object.create(null);
+      for (let i = from; i < to; i++) for (const t of perMsgWords[i]) tf[t] = (tf[t] || 0) + 1;
+      return Object.keys(tf)
+        .map(t => ({ t, w: tf[t] * idf(t) }))
+        .sort((a, b) => b.w - a.w || (a.t < b.t ? -1 : 1))
+        .slice(0, k);
+    };
 
-    const drift = perMsgWords.map(w => {
-      if (!topicW) return 0;
-      let hit = 0;
-      for (const t of new Set(w)) if (topicIdx[t]) hit += topicIdx[t];
-      return 1 - clamp01(hit / (TOPIC_FULL_MATCH * topicW));
+    const bounds = [];
+    for (let i = 0; i < msgs.length; i++) {
+      const e = episode[i];
+      if (!bounds[e]) bounds[e] = { from: i, to: i + 1 };
+      else bounds[e].to = i + 1;
+    }
+    const epTopic = bounds.map(b => {
+      const terms = topicOf(b.from, Math.min(b.to, b.from + EPISODE_OPENING), TOPIC_TERMS);
+      const total = terms.reduce((a, x) => a + x.w, 0);
+      const index = Object.create(null);
+      for (const x of terms) index[x.t] = x.w;
+      return { terms, total, index };
     });
+
+    // Each message is measured against the opening of ITS OWN episode.
+    const drift = perMsgWords.map((w, i) => {
+      const T = epTopic[episode[i]];
+      if (!T || !T.total) return 0;
+      let hit = 0;
+      for (const t of new Set(w)) if (T.index[t]) hit += T.index[t];
+      return 1 - clamp01(hit / (TOPIC_FULL_MATCH * T.total));
+    });
+
+    // "The opening topic" in the UI means what the chat started as: episode one.
+    const topic = epTopic.length ? epTopic[0].terms : [];
 
     /* --- per person accumulators --- */
     const P = {};
@@ -509,6 +565,8 @@
       claims: [], questionsAsked: 0, answered: 0, putToThem: 0,
       drifts: [], goalposts: [], concession: 0, selfCorrection: 0,
       hostile: 0, words: 0, hedge: 0, absolutist: 0,
+      // incidence: how many of their MESSAGES carried the thing, not how many words
+      msgs: 0, hostileMsgs: 0, hedgeMsgs: 0, concessionMsgs: 0, absolutistMsgs: 0,
     };
 
     /* --- sentences: claims and questions --- */
@@ -519,11 +577,18 @@
       if (!p) return;
       p.drifts.push(drift[i]);
       p.words += m.words;
-      p.hostile += (m.c.profanity || 0) + (m.c.insult || 0) + (m.c.political_label || 0) + (m.c.status_hierarchy || 0) + (m.rhet.personal_attack || 0);
+      p.msgs++;
+      const hostile = (m.c.profanity || 0) + (m.c.insult || 0) + (m.c.political_label || 0) + (m.c.status_hierarchy || 0) + (m.rhet.personal_attack || 0);
+      p.hostile += hostile;
+      if (hostile) p.hostileMsgs++;
       p.hedge += m.c.hedge || 0;
+      if (m.c.hedge) p.hedgeMsgs++;
       p.absolutist += m.c.absolutist || 0;
+      if (m.c.absolutist) p.absolutistMsgs++;
       const lowerMsg = m.text.toLowerCase();
-      p.concession += countList(R.concession, toks[i], lowerMsg);
+      const conc = countList(R.concession, toks[i], lowerMsg);
+      p.concession += conc;
+      if (conc) p.concessionMsgs++;
       p.selfCorrection += countList(R.selfCorrection, toks[i], lowerMsg);
 
       for (const sent of splitSentences(m.text)) {
@@ -590,9 +655,12 @@
       if (!p || i === 0) return;
       const prev = msgs[i - 1];
       if (prev.who === m.who) return;
+      // A six-hour gap starts a new conversation, so a challenge cannot be
+      // "dodged" by a message three days later.
+      if (episode[i] !== episode[i - 1]) return;
       if (!((prev.rhet.evidence_request || 0) > 0 || prev.text.indexOf('?') >= 0)) return;
       let lastOwn = -1;
-      for (let j = i - 1; j >= 0; j--) if (msgs[j].who === m.who) { lastOwn = j; break; }
+      for (let j = i - 1; j >= 0; j--) if (msgs[j].who === m.who && episode[j] === episode[i]) { lastOwn = j; break; }
       if (lastOwn < 0) return;
       if (drift[i] >= DRIFT_HIGH && drift[i] - drift[lastOwn] >= DRIFT_JUMP)
         p.goalposts.push({ date: m.date, from: drift[lastOwn], to: drift[i], text: m.text.slice(0, 160) });
@@ -604,13 +672,22 @@
       const p = P[name];
       const n = p.claims.length;
       const per100 = k => (p.words ? (100 * k) / p.words : 0);
+      // Conduct and Calibration use INCIDENCE -- the share of this person's
+      // messages that carried the thing -- not a per-100-word rate. Per 100 words
+      // is the right normaliser for a descriptive rate, but the wrong basis for a
+      // deduction: 20 words with one insult scored 5.0/100w and floored at zero,
+      // while 500 words with five insults scored 1.0/100w and kept most of the
+      // marks. That punished brevity and rewarded padding.
+      const share = k => (p.msgs ? k / p.msgs : 0);
       const components = {
         sourcing: n ? p.claims.filter(c => c.checkable).length / n : null,
         specificity: n ? mean(p.claims.map(c => c.specificity)) : null,
         responsiveness: p.putToThem ? Math.min(1, p.answered / p.putToThem) : null,
         topic: p.drifts.length ? clamp01(1 - mean(p.drifts) - GOALPOST_PENALTY * p.goalposts.length) : null,
-        conduct: p.words ? clamp01(1 - per100(p.hostile) / 4) : null,
-        calibration: p.words ? clamp01(0.5 + (per100(p.hedge) + 2 * per100(p.concession) - per100(p.absolutist)) / 6) : null,
+        conduct: p.msgs ? clamp01(1 - share(p.hostileMsgs) / CONDUCT_ZERO) : null,
+        calibration: p.msgs
+          ? clamp01(0.5 + (share(p.hedgeMsgs) + 2 * share(p.concessionMsgs) - share(p.absolutistMsgs)) / CALIBRATION_SPAN)
+          : null,
         selfCorrection: Math.min(1, p.selfCorrection / 2),
       };
       let num = 0, den = 0;
@@ -624,12 +701,29 @@
         questionsAsked: p.questionsAsked, questionsPutToThem: p.putToThem, questionsAnswered: p.answered,
         concessions: p.concession, selfCorrections: p.selfCorrection,
         goalposts: p.goalposts, meanDrift: p.drifts.length ? mean(p.drifts) : null,
+        hostileMessages: p.hostileMsgs, scoredMessages: p.msgs,
+        hostileShare: p.msgs ? p.hostileMsgs / p.msgs : null,
       };
     }
+
+    // How much of an argument is this, really? Sourcing and Answering are only
+    // meaningful where there are claims and questions to score. Measured, not guessed.
+    const totalClaims = ledger.length;
+    const claimsPerMessage = msgs.length ? totalClaims / msgs.length : 0;
+    const fit = clamp01(claimsPerMessage / RIGOR_FIT_FULL);
 
     return {
       people: out,
       weights: RIGOR_WEIGHTS,
+      applicability: {
+        claims: totalClaims,
+        messages: msgs.length,
+        claimsPerMessage,
+        fit,
+        weak: fit < RIGOR_FIT_WEAK,
+      },
+      episodes: episodeCount,
+      episodeTopics: epTopic.slice(0, 12).map(t => t.terms.slice(0, 6).map(x => x.t)),
       topicTerms: topic.map(x => x.t),
       ledgerTotal: ledger.length,
       ledger: ledger.slice(0, LEDGER_MAX).map(c => ({ who: c.who, date: c.date, text: c.text.slice(0, 240), status: c.status, checkable: c.checkable, challenged: c.challenged, answered: c.answered })),

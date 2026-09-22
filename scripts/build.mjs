@@ -22,12 +22,13 @@ const css = r('web/src/style.css')
 const body = r('web/src/body.html');
 const coreSrc = r('web/src/core.js');
 
-// TL_CORE_SRC is the same core.js again, as a string, so the page can build a
-// Web Worker from a Blob without fetching anything. That is the only reason the
-// CSP allows worker-src blob:, and it is why connect-src can stay 'none'.
-// The worker never reads comments, so they are stripped from that copy only -- the
-// executable copy in the page keeps every one of them. Whole-line comments only:
-// anything cleverer would eat the `https?:\/\/` inside core.js's own regexes.
+// The Worker is built from a Blob of core.js, because there is no network to
+// fetch a script over -- that is the only reason the CSP allows worker-src blob:,
+// and it is why connect-src can stay 'none'. The source is NOT embedded twice:
+// app.js reads it back off the <script id="tl-core"> tag that is already in the
+// document. Comments are stripped to keep the page inside its budget; the
+// annotated source is in the repo and linked from the footer. Whole-line
+// comments only: anything cleverer would eat the `https?:\/\/` in core.js's regexes.
 const stripComments = s => s
   .replace(/^[ 	]*\/\*[\s\S]*?\*\/[ 	]*$/gm, '')
   .replace(/^[ 	]*\/\/.*$/gm, '')
@@ -42,11 +43,14 @@ const scripts = env => [
   `window.TL_ENV=${JSON.stringify(env)};`
   + `window.TL_LEX=${safe(json('lexicons/lexicons.json'))};`
   + `window.TL_VADER=${safe(json('lexicons/vader.json'))};`
-  + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`
-  + `window.TL_CORE_SRC=${safe(JSON.stringify(stripComments(coreSrc)))};`,
-  coreSrc,
+  + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`,
+  stripComments(coreSrc),
   r('web/src/app.js'),
 ].map(safe);
+
+// The core script carries an id so app.js can read its own source for the Worker.
+const CORE_INDEX = 2;
+const tagFor = i => (i === CORE_INDEX ? '<script id="tl-core">' : '<script>');
 
 const title = 'Threadlens — see how the argument actually went';
 const desc = 'Free, private chat analysis in your browser. Drop in a WhatsApp export and see who asked and who asserted, who started it, where the heat rose, and how well each side argued. Works on relationship arguments, family group chats and work threads. Nothing is uploaded.';
@@ -82,7 +86,7 @@ mkdirSync(join(root, 'dist'), { recursive: true });
 </head>
 <body>
 ${body}
-${s.map(js => `<script>${js}</script>`).join('\n')}
+${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 </body>
 </html>
 `;
@@ -95,7 +99,7 @@ ${s.map(js => `<script>${js}</script>`).join('\n')}
   const html = `<title>${title}</title>
 <style>${css}</style>
 ${body}
-${s.map(js => `<script>${js}</script>`).join('\n')}
+${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 `;
   writeFileSync(join(root, 'dist/threadlens-artifact.html'), html);
 }

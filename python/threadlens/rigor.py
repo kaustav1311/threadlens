@@ -22,6 +22,12 @@ RIGOR_LABELS = {
     "selfCorrection": "Self-correction",
 }
 
+EPISODE_GAP_HOURS = 6      # the same gap that defines "started a conversation"
+EPISODE_OPENING = 6        # messages of an episode that define its topic
+CONDUCT_ZERO = 0.3         # share of messages carrying hostility at which Conduct hits 0
+RIGOR_FIT_FULL = 0.35      # claims per message at which Rigor is fully applicable
+RIGOR_FIT_WEAK = 0.4       # below this fit, callers should warn rather than assert
+CALIBRATION_SPAN = 1.5     # how far incidence must move to swing Calibration end to end
 RIGOR_ANSWER_WINDOW = 6
 RIGOR_MIN_CLAIM_WORDS = 6
 RIGOR_KEYWORD_MIN = 3
@@ -76,6 +82,17 @@ def _downsample(arr, max_points):
     return [arr[int(i * step)] for i in range(max_points)]
 
 
+def _episode_of(msgs):
+    """Split a chat into episodes at the same six-hour gap that defines "started a
+    conversation". Mirrors episodeOf() in core.js."""
+    out, ep = [], 0
+    for i, m in enumerate(msgs):
+        if i and (m["date"] - msgs[i - 1]["date"]).total_seconds() / 3600 >= EPISODE_GAP_HOURS:
+            ep += 1
+        out.append(ep)
+    return out
+
+
 def _content_words(tokens, stop):
     return [t for t in tokens if len(t) >= RIGOR_KEYWORD_MIN and t not in stop]
 
@@ -119,7 +136,9 @@ def analyse_rigor(scored, people, R):
     stop = R["stopwords"]
     toks = [_tokens(m["text"].lower()) for m in msgs]
 
-    # --- opening topic: TF-IDF over messages, so shared chatter words drop out ---
+    # --- topic and drift, scoped to a conversation episode ---
+    episode = _episode_of(msgs)
+    episode_count = (episode[-1] + 1) if msgs else 0
     df = {}
     per_msg_words = []
     for i, m in enumerate(msgs):
@@ -134,25 +153,46 @@ def analyse_rigor(scored, people, R):
     def idf(t):
         return math.log(1 + n_msgs / (1 + df.get(t, 0)))
 
-    tf = {}
-    for i in range(min(TOPIC_OPENING_MSGS, len(msgs))):
-        for t in per_msg_words[i]:
-            tf[t] = tf.get(t, 0) + 1
-    topic = sorted(((t, c * idf(t)) for t, c in tf.items()), key=lambda x: (-x[1], x[0]))[:TOPIC_TERMS]
-    topic_w = sum(w for _, w in topic)
-    topic_idx = dict(topic)
+    def topic_of(frm, to, k):
+        """Top terms of a slice of messages, by TF-IDF against the whole chat."""
+        tf = {}
+        for i in range(frm, to):
+            for t in per_msg_words[i]:
+                tf[t] = tf.get(t, 0) + 1
+        return sorted(((t, n * idf(t)) for t, n in tf.items()), key=lambda x: (-x[1], x[0]))[:k]
 
+    bounds = {}
+    for i in range(len(msgs)):
+        e = episode[i]
+        if e not in bounds:
+            bounds[e] = [i, i + 1]
+        else:
+            bounds[e][1] = i + 1
+    ep_topic = []
+    for e in range(episode_count):
+        frm, to = bounds[e]
+        terms = topic_of(frm, min(to, frm + EPISODE_OPENING), TOPIC_TERMS)
+        ep_topic.append({"terms": terms, "total": sum(w for _, w in terms), "index": dict(terms)})
+
+    # Each message is measured against the opening of ITS OWN episode.
     drift = []
-    for w in per_msg_words:
-        if not topic_w:
+    for i, w in enumerate(per_msg_words):
+        T = ep_topic[episode[i]] if episode[i] < len(ep_topic) else None
+        if not T or not T["total"]:
             drift.append(0.0)
             continue
-        hit = sum(topic_idx[t] for t in set(w) if t in topic_idx)
-        drift.append(1 - _clamp01(hit / (TOPIC_FULL_MATCH * topic_w)))
+        hit = sum(T["index"][t] for t in set(w) if t in T["index"])
+        drift.append(1 - _clamp01(hit / (TOPIC_FULL_MATCH * T["total"])))
+
+    # "The opening topic" in the UI means what the chat started as: episode one.
+    topic = ep_topic[0]["terms"] if ep_topic else []
 
     P = {p: {"claims": [], "questions_asked": 0, "answered": 0, "put_to_them": 0,
              "drifts": [], "goalposts": [], "concession": 0, "self_correction": 0,
-             "hostile": 0, "words": 0, "hedge": 0, "absolutist": 0} for p in people}
+             "hostile": 0, "words": 0, "hedge": 0, "absolutist": 0,
+             # incidence: how many of their MESSAGES carried the thing, not how many words
+             "msgs": 0, "hostile_msgs": 0, "hedge_msgs": 0, "concession_msgs": 0,
+             "absolutist_msgs": 0} for p in people}
 
     ledger, questions = [], []
     for i, m in enumerate(msgs):
@@ -161,13 +201,24 @@ def analyse_rigor(scored, people, R):
             continue
         p["drifts"].append(drift[i])
         p["words"] += m["words"]
-        p["hostile"] += (m["c"].get("profanity", 0) + m["c"].get("insult", 0)
-                         + m["c"].get("political_label", 0) + m["c"].get("status_hierarchy", 0)
-                         + m["rhet"].get("personal_attack", 0))
+        p["msgs"] += 1
+        hostile = (m["c"].get("profanity", 0) + m["c"].get("insult", 0)
+                   + m["c"].get("political_label", 0) + m["c"].get("status_hierarchy", 0)
+                   + m["rhet"].get("personal_attack", 0))
+        p["hostile"] += hostile
+        if hostile:
+            p["hostile_msgs"] += 1
         p["hedge"] += m["c"].get("hedge", 0)
+        if m["c"].get("hedge", 0):
+            p["hedge_msgs"] += 1
         p["absolutist"] += m["c"].get("absolutist", 0)
+        if m["c"].get("absolutist", 0):
+            p["absolutist_msgs"] += 1
         lower_msg = m["text"].lower()
-        p["concession"] += R["concession"].count(toks[i], lower_msg)
+        conc = R["concession"].count(toks[i], lower_msg)
+        p["concession"] += conc
+        if conc:
+            p["concession_msgs"] += 1
         p["self_correction"] += R["self_correction"].count(toks[i], lower_msg)
 
         for sent in split_sentences(m["text"]):
@@ -257,9 +308,14 @@ def analyse_rigor(scored, people, R):
         prev = msgs[i - 1]
         if prev["who"] == m["who"]:
             continue
+        # A six-hour gap starts a new conversation, so a challenge cannot be
+        # "dodged" by a message three days later.
+        if episode[i] != episode[i - 1]:
+            continue
         if not (prev["rhet"].get("evidence_request", 0) > 0 or "?" in prev["text"]):
             continue
-        last_own = next((j for j in range(i - 1, -1, -1) if msgs[j]["who"] == m["who"]), -1)
+        last_own = next((j for j in range(i - 1, -1, -1)
+                         if msgs[j]["who"] == m["who"] and episode[j] == episode[i]), -1)
         if last_own < 0:
             continue
         if drift[i] >= DRIFT_HIGH and drift[i] - drift[last_own] >= DRIFT_JUMP:
@@ -274,13 +330,21 @@ def analyse_rigor(scored, people, R):
         def per100(k, _p=p):
             return 100 * k / _p["words"] if _p["words"] else 0.0
 
+        # Conduct and Calibration use INCIDENCE -- the share of this person's
+        # messages that carried the thing -- not a per-100-word rate. See the
+        # matching note in core.js: per 100 words punished brevity.
+        def share(k, _p=p):
+            return k / _p["msgs"] if _p["msgs"] else 0.0
+
         components = {
             "sourcing": (sum(1 for c in p["claims"] if c["checkable"]) / n) if n else None,
             "specificity": _mean([c["specificity"] for c in p["claims"]]) if n else None,
             "responsiveness": min(1.0, p["answered"] / p["put_to_them"]) if p["put_to_them"] else None,
             "topic": _clamp01(1 - _mean(p["drifts"]) - GOALPOST_PENALTY * len(p["goalposts"])) if p["drifts"] else None,
-            "conduct": _clamp01(1 - per100(p["hostile"]) / 4) if p["words"] else None,
-            "calibration": _clamp01(0.5 + (per100(p["hedge"]) + 2 * per100(p["concession"]) - per100(p["absolutist"])) / 6) if p["words"] else None,
+            "conduct": _clamp01(1 - share(p["hostile_msgs"]) / CONDUCT_ZERO) if p["msgs"] else None,
+            "calibration": _clamp01(
+                0.5 + (share(p["hedge_msgs"]) + 2 * share(p["concession_msgs"]) - share(p["absolutist_msgs"]))
+                / CALIBRATION_SPAN) if p["msgs"] else None,
             "selfCorrection": min(1.0, p["self_correction"] / 2),
         }
         num = den = 0.0
@@ -299,11 +363,22 @@ def analyse_rigor(scored, people, R):
             "concessions": p["concession"], "self_corrections": p["self_correction"],
             "goalposts": p["goalposts"],
             "mean_drift": _mean(p["drifts"]) if p["drifts"] else None,
+            "hostile_messages": p["hostile_msgs"], "scored_messages": p["msgs"],
+            "hostile_share": (p["hostile_msgs"] / p["msgs"]) if p["msgs"] else None,
         }
 
     return {
         "people": out,
         "weights": RIGOR_WEIGHTS,
+        "applicability": {
+            "claims": len(ledger),
+            "messages": len(msgs),
+            "claims_per_message": (len(ledger) / len(msgs)) if msgs else 0.0,
+            "fit": _clamp01((len(ledger) / len(msgs)) / RIGOR_FIT_FULL) if msgs else 0.0,
+            "weak": (_clamp01((len(ledger) / len(msgs)) / RIGOR_FIT_FULL) if msgs else 0.0) < RIGOR_FIT_WEAK,
+        },
+        "episodes": episode_count,
+        "episode_topics": [[t for t, _ in e["terms"][:6]] for e in ep_topic[:12]],
         "topic_terms": [t for t, _ in topic],
         "ledger_total": len(ledger),
         "ledger": [{"who": c["who"], "date": c["date"].isoformat(), "text": c["text"][:240],

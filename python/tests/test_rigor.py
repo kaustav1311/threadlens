@@ -136,3 +136,64 @@ def test_matches_javascript(sample):
            [(c["who"], c["text"], c["status"], c["challenged"], c["answered"]) for c in py["ledger"]]
     assert [(q["who"], q["text"]) for q in js["unanswered"]] == \
            [(q["who"], q["text"]) for q in py["unanswered"]]
+
+
+# ------------------------------------------------------------------ rigor v2
+
+def _mk(rows):
+    return "\n".join(
+        f"{d:02d}/06/2026, {h:02d}:{m:02d} - {who}: {text}" for d, h, m, who, text in rows)
+
+
+def test_conduct_counts_messages_not_words():
+    """Per-100-words punished brevity: one insult in 20 words scored worse than
+    five in 500. Conduct is incidence now, so verbosity must not move it."""
+    pad = "the committee report from March 2026 set out the position at some length and in detail "
+    terse = [(1 + i, 9, i, "Terse", "you are an idiot" if i == 0 else "the report says it rose") for i in range(10)]
+    windy = [(1 + i, 9, i, "Windy", ("you are an idiot " if i == 0 else "") + pad + "and the report says it rose")
+             for i in range(10)]
+    a = Analyzer().analyse(parse_chat(_mk(terse)))["rigor"]["people"]["Terse"]
+    b = Analyzer().analyse(parse_chat(_mk(windy)))["rigor"]["people"]["Windy"]
+    assert a["components"]["conduct"] == pytest.approx(b["components"]["conduct"], abs=1e-9)
+    assert a["hostile_messages"] == 1 and b["hostile_messages"] == 1
+
+
+def test_episodes_scope_the_drift_baseline():
+    rows = [(1, 9, i, "B" if i % 2 else "A", "the rent cap report said the waiting list rose in January") for i in range(6)]
+    rows += [(9, 9, i, "B" if i % 2 else "A", "the cricket selection panel dropped the opening batsman yesterday") for i in range(6)]
+    G = Analyzer().analyse(parse_chat(_mk(rows)))["rigor"]
+    assert G["episodes"] >= 2
+    first, second = G["episode_topics"][0], G["episode_topics"][1]
+    assert not set(first) & set(second), "episode topics should not overlap here"
+
+
+def test_applicability_admits_when_rigor_does_not_fit():
+    chatty = [(1 + (i % 20), 9, i % 60, "B" if i % 2 else "A", "haha ok sure see you then") for i in range(30)]
+    casual = Analyzer().analyse(parse_chat(_mk(chatty)))["rigor"]["applicability"]
+    assert casual["claims"] == 0 and casual["weak"]
+    argued = run(MIRRORS[0])["rigor"]["applicability"]
+    assert argued["claims"] > 10 and not argued["weak"]
+
+
+def test_clip_narrows_before_scoring():
+    t = (ROOT / "samples" / MIRRORS[0]).read_text("utf-8")
+    everything = parse_chat(t)
+    day_one = parse_chat(t, frm="2026-04-04", to="2026-04-04")
+    day_two = parse_chat(t, frm="2026-04-05")
+    assert len(day_one["messages"]) + len(day_two["messages"]) == len(everything["messages"])
+    # a bare `to` date means the whole of that day
+    assert all(m.date.day == 4 for m in day_one["messages"])
+    assert all(m.date.day == 5 for m in day_two["messages"])
+    assert everything["clipped"] == 0 and day_one["clipped"] > 0
+    assert Analyzer().analyse(day_two)["totals"]["messages"] < Analyzer().analyse(everything)["totals"]["messages"]
+
+
+def test_parser_survives_realistic_paste():
+    """Three shapes that used to parse as zero messages."""
+    for label, text in [
+        ("indented", "   21/09/2026, 01:02 - Ravi: hello there friend\n21/09/2026, 01:05 - Asha: hi back"),
+        ("no space after dash", "21/09/2026, 01:02 -Ravi: hello there friend\n21/09/2026, 01:05 -Asha: hi back"),
+        ("em dash", "21/09/2026, 01:02 — Ravi: hello there friend\n21/09/2026, 01:05 — Asha: hi back"),
+    ]:
+        p = parse_chat(text)
+        assert len(p["messages"]) == 2, f"{label} parsed {len(p['messages'])} messages"

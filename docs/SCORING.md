@@ -95,14 +95,31 @@ independently in `0..1`.
 | Sourcing | 25 | share of that person's factual claims that point at something checkable |
 | Answering | 20 | share of the *other* person's direct questions they engaged with |
 | Topic discipline | 15 | `1 − mean(drift)`, minus 0.1 per goalpost shift |
-| Conduct | 15 | `1 − (hostile words per 100) / 4`, clamped to `0..1` |
+| Conduct | 15 | `1 − (share of their messages carrying hostility) / 0.30`, clamped |
 | Specificity | 10 | mean concreteness of their claim sentences |
-| Calibration | 10 | `0.5 + (hedging + 2×concessions − absolutist) / 6`, clamped |
+| Calibration | 10 | `0.5 + (hedge share + 2×concession share − absolutist share) / 1.5`, clamped |
 | Self-correction | 5 | `min(1, explicit self-corrections / 2)` |
 
 ```
 score = 100 × Σ(weightᵢ × componentᵢ) / Σ(weightᵢ)      over components that apply
 ```
+
+### Why Conduct and Calibration count messages, not words
+
+Per 100 words is the right normaliser for a *descriptive* rate: it stops whoever typed more from winning every
+category automatically. It is the wrong basis for a *deduction*.
+
+Take two people, each hostile in exactly one message out of ten. One writes 20-word messages, the other writes
+200-word essays. Under a per-100-words rule the terse speaker scores about 5.0 and is floored at zero, while the
+verbose speaker scores about 0.5 and keeps most of the marks. **Brevity was punished and padding rewarded** —
+the opposite of what a conduct measure should do.
+
+Conduct and Calibration therefore use **incidence**: the share of that person's messages that carried the thing
+at all. "A quarter of your messages contained an insult, a slur or a put-down" does not move with how much
+anyone types, and you can check it by hand. `test_conduct_counts_messages_not_words` pins it: the terse and
+verbose speakers above must receive identical Conduct.
+
+Per-100-word rates are unchanged everywhere else, because everywhere else they describe rather than deduct.
 
 **Components that do not apply are excluded from both sums rather than scored zero.** If nobody asked you a
 question, Answering is `n/a` and the remaining 80 points are rescaled to 100. Scoring it zero would punish
@@ -143,9 +160,19 @@ IDF weighting matters: a flat shared-word count returned zero for nearly every r
 replies repeat few words. Weighting by inverse document frequency means echoing *"shopkeepers"* counts and
 echoing *"think"* does not.
 
-### Topic drift
+### Topic drift, scoped to an episode
 
-The opening topic is the top 12 terms by TF‑IDF across the first 10 text messages (documents = messages).
+Measuring every message against the first ten messages of the *entire export* is only meaningful when the whole
+export is one argument. Across months it is nonsense: a chat legitimately moves on, and "drift" degenerates
+into a measure of elapsed time.
+
+The chat is therefore split into **episodes** at the same six-hour gap that defines "started a conversation",
+and each message is measured against the opening (up to 6 messages) of **its own episode**. A goalpost shift is
+only recorded within one episode, so a challenge on Tuesday cannot be "dodged" by a message on Friday. The
+topic the UI calls "the opening topic" is episode one's, because that is what a reader means by what the chat
+started as.
+
+Within an episode, its topic is the top 12 terms by TF‑IDF across the first 10 text messages (documents = messages).
 For each message:
 
 ```
@@ -157,8 +184,39 @@ Matching a quarter of the opening topic's weight counts as fully on-topic. A **g
 when someone is challenged (a question or a request for evidence) and their next message has drift ≥ 0.8 that
 is also ≥ 0.3 higher than their own previous message.
 
-**Known failure:** a conversation that legitimately moves on will show high drift. Drift is a description,
-not an accusation.
+**Known failure:** a conversation that legitimately changes subject *within one episode* will still show
+drift. Drift is a description, not an accusation.
+
+### Is Rigor even the right lens?
+
+Rigor asks "did you source that?". That is a fair question of a political argument and a meaningless one of a
+chat about dinner. Rather than guess a conversation's genre from invented weights, Threadlens measures the
+thing that actually decides it:
+
+```
+claims per message = extracted claims / text messages
+fit                = min(1, claims per message / 0.35)
+```
+
+Below a fit of 0.4 the lens stops asserting and says so: *"Only 3 factual claims in 120 messages. Rigor is
+built for an argument where people assert things and are asked to back them up. This reads more like
+conversation."* A tool that knows when it is the wrong instrument is worth more than one that always produces
+a number.
+
+This is also why the app asks, optionally, what kind of chat it is looking at — a partner, family, a
+colleague, someone you argue with online. That answer chooses which lens opens first and which findings are
+worth surfacing. **It never changes how anything is scored.**
+
+### Clipping a conversation
+
+A long export usually holds many conversations, only one of which you care about. `parseChat(text, {from, to})`
+in JavaScript, `parse_chat(text, frm=, to=)` in Python, narrows the chat **before anything is scored**, so
+rates, episodes, drift, the ledger and every finding are computed on the clip rather than filtered afterwards.
+A bare `to` date includes the whole of that day.
+
+The web app offers windows computed from the chat itself rather than from the calendar: the last 30 and 90
+days *of this chat*, its busiest month, and the week its heat peaked. "Last 30 days" relative to today is
+useless for an argument that finished in March.
 
 ---
 
