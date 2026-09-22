@@ -81,6 +81,11 @@ the main thread and the result is identical.
 - A leading space used to drop an exported line entirely (the `^` anchor). Pasted text nearly always has one,
   which was most of "paste doesn't work". Matching is done on a left-trimmed copy.
 - The separator may be `-`, an en dash or an em dash, with or without a space after it.
+- **The timestamp comes in four shapes, not two.** The clock may lead the date (`[10:07, 22/09/2026]`) and the
+  year may be absent entirely (`[10:07, 22/09]`) — that is what selecting messages on a phone and copying them
+  produces, and it is the most common paste. `headOf` / `_head` normalise all four to one canonical head
+  `(d1, d2, d3, hh, mm, ss, am/pm)` so nothing downstream knows the difference. A year-less line inherits the
+  last year seen and rolls forward by one if that would run the chat backwards (December → January).
 - `core.js` is emitted **once**, as `<script id="tl-core">`; app.js reads its own source off that tag to build
   the Worker. Embedding it a second time as a string cost ~38 KB and kept breaking the page budget.
 
