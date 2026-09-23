@@ -62,3 +62,34 @@ test('anonymise replaces names', () => {
 test('empty input throws a readable error', () => {
   assert.throws(() => A.analyse(core.parseChat('hello world')), /No messages found/);
 });
+
+test('a transcript with no timestamps is read in order, and says so', () => {
+  // Copying the message bubbles instead of exporting the chat gives you names and
+  // text but no clock. That used to produce "none of them carry a timestamp".
+  const t = ['Riya: Hiii', 'Sourav: Yooo', 'Riya: Kmn achis?', 'Sourav: cholche cholche',
+    'Riya: the report says the backlog was 1,240 cases', 'Sourav: thats not true at all',
+    'Riya: you people always do this', 'Sourav: the audit from October put it at 1,240'].join('\n');
+  const p = core.parseChat(t);
+  assert.strictEqual(p.undated, true);
+  assert.strictEqual(p.messages.length, 8);
+  assert.deepEqual([...new Set(p.messages.map(m => m.author))], ['Riya', 'Sourav']);
+  // Order is preserved and strictly increasing, so everything downstream still works.
+  for (let i = 1; i < p.messages.length; i++) {
+    assert.ok(p.messages[i].date > p.messages[i - 1].date, 'the synthetic timeline must run forwards');
+  }
+  const res = A.analyse(p);
+  assert.strictEqual(res.undated, true, 'the flag has to survive into the result, or the UI will draw a fake timeline');
+});
+
+test('a real export is never read as undated', () => {
+  const p = core.parseChat(fs.readFileSync(path.join(root, 'samples/rigor_left_vs_right.txt'), 'utf8'));
+  assert.strictEqual(p.undated, false);
+  assert.ok(p.messages.length > 20);
+});
+
+test('prose with a colon in it is not mistaken for a speaker', () => {
+  // The undated fallback only runs when nothing carries a timestamp, and even then a
+  // "name" may not be a whole sentence.
+  const p = core.parseChat('Here is the thing: it was never about the money.\nAnd another line.');
+  assert.strictEqual(p.messages.length, 0);
+});

@@ -80,8 +80,15 @@ reason an argument goes nowhere.
 ### Rhetorical cues
 
 Regex phrase patterns for whataboutism, false choices, exit-then-return, unfalsifiable certainty, requests
-for evidence, and personal attacks. Every match links to the message that produced it, because **a phrase
-match is a prompt to re-read, not a finding.**
+for evidence, personal attacks, and **caveats** — the one cue family that marks a good move, qualifying a claim
+rather than asserting it flat. Every match links to the message that produced it, because **a phrase match is
+a prompt to re-read, not a finding.**
+
+Each family carries its own positive and negative examples in `lexicons/lexicons.json` under
+`_rhetoric_examples`, and both suites assert that every family still matches its examples and still rejects
+its counter-examples. A cue that quietly stops matching otherwise shows up as a column of zeroes, which reads
+exactly like "nobody did this". That test is what caught `what about` firing on *"What about Tuesday, are you
+free?"* — scheduling, not whataboutism, and now excluded explicitly.
 
 ---
 
@@ -127,17 +134,31 @@ you for someone else's silence.
 
 ### What counts as a claim
 
-A sentence is a claim when **all** of these hold:
+A claim is an **assertion about the world**. Not a plan, not advice, not an opinion, and not a remark about
+the conversation itself. A sentence qualifies when it is at least 5 tokens, carries a verb, and survives every
+rejection below:
 
-1. it contains no `?`;
-2. it is at least 6 tokens long;
-3. it contains a factual verb (`is, was, has, did, said, passed, ruled, caps, raised, …`, plus Hinglish
-   `hai, tha, kiya, kaha, …`);
-4. it does **not** open with an opinion marker (`I think`, `I feel`, `in my opinion`, `mujhe lagta`, …);
-5. it does **not** open with an intent marker (`if `, `let's`, `I will`, `happy to`, `can you`, …).
+| Rejected | Because | Example |
+|---|---|---|
+| Question | it asks rather than asserts | *Where did you see four hours?* |
+| Unmarked question | chat writers drop the `?` constantly | *How's the new place been* |
+| Opinion opener | flagged as a view, not a fact | *I think the report is wrong* |
+| Intent opener | a statement of what someone will do | *If you have a figure I will look at it* |
+| Modality | obligation, plan, advice, request | *The place has to be clean* · *try the bigger complexes* |
+| Interior state | nobody can check how you feel | *we love the little ones* · *I don't care* |
+| Meta-talk | about the conversation, not the world | *you asked for a number and that's the number* |
 
-Rules 4 and 5 exist because without them *"If you have a figure I will look at it"* was being filed as an
-unsourced factual claim, which made careful speakers look vague.
+Meta-talk is only rejected when the sentence carries **nothing checkable**. *"I said ninety minutes was the
+ward office figure"* reports what was said and also names a figure, so it stays a claim.
+
+Two things the verb test had to learn. The tokeniser splits `it's` into `it` + `s`, so a copula contraction
+left the gate finding no verb at all; contractions are expanded before the check. And a bare citation —
+*"Section 3 of the same report, page 12"* — has no verb and is still a claim about where something can be
+checked, so a named source plus a number or date is accepted on its own.
+
+**Measured accuracy: 91.1% macro-F1** on the labelled set (§6a). The errors that remain are evaluative
+sentences: *"It was violence for a political cause"* is a claim, *"It is political in every way possible"* is
+not, and no word list sees the difference.
 
 ### What counts as a source
 
@@ -288,6 +309,94 @@ None of these ever label a claim true or false.
 
 **Threadlens cannot detect personality, intelligence, mental health, honesty or love.** Any reading of these
 numbers along those lines is yours, not the tool's, and it is not supported by anything in this document.
+
+---
+
+## 6a. Measured accuracy, and the baseline to beat
+
+Section 6 lists the limits in words. This section lists them as numbers, because "the keyword matching
+isn't good enough" is only actionable once it is measured.
+
+`make eval` scores the two sentence-level gates against a hand-labelled set,
+[`samples/labels_banglish_mixed.json`](../samples/labels_banglish_mixed.json), over
+[`samples/sample_banglish_mixed.txt`](../samples/sample_banglish_mixed.txt). That fixture is synthetic but
+not arbitrary: it reproduces the measured structure of a real Bengali-English chat — median 3 words per
+message, 11% of messages carrying a question, nine episodes at the six-hour split, and two genuine
+arguments buried inside small talk — with invented people, places and specifics. No real conversation is
+stored in this repository.
+
+Both sides build their units in [`scripts/items.mjs`](../scripts/items.mjs), so a gold label and a
+prediction can never be compared across two different sentence splits. `node scripts/eval.mjs --errors`
+prints what each gate got wrong, which is the only view that says what to fix next.
+
+| Decision | v0.2 accuracy | v0.2 macro-F1 | v0.3 accuracy | v0.3 macro-F1 |
+|---|---|---|---|---|
+| Claim detection | 57.1% | 55.2% | **92.2%** | **91.1%** |
+| Question type | 65.0% | 26.3% | **95.0%** | **94.0%** |
+| Is it an argument? | — | — | **100%** | **100%** |
+
+### What v0.2 was actually doing
+
+- **Claim detection precision was 36.8%.** Nearly two thirds of what the claim ledger printed was not a
+  claim — it was a plan, a piece of advice, an opinion, or a remark about the speakers' own arrangements.
+- **Phatic and rhetorical questions scored 0.0%.** The code had no concept of either, so every `Wbu?` and
+  every whataboutism was booked as a substantive question somebody had failed to answer.
+
+Three causes, two of them outright bugs:
+
+1. **The stoplist was English-only.** The romanised Bengali function words that make up much of a chat like
+   this (`na`, `ami`, `ta`, `kore`, `theke`, `tui`, `eta`) were treated as rare, distinctive content words.
+   Topic vectors, drift and question/answer overlap were all computed on that mistake.
+2. **Openers matched inside words.** `intent_opener` contained a bare `"id "` and `"ill "`, matched with
+   `indexOf`. `"sa|id i|t was ninety minutes"` and `"st|ill s|ays"` both matched, so any sentence with
+   *said*, *did* or *still* near its start was silently dropped as a statement of intent. Same class of bug
+   as a bare month prefix matching "market" — openers are word-boundary anchored now.
+3. **`"the"` was a factual verb.** Romanised Hindi *"the"* (they were) shares its spelling with the commonest
+   word in English, so on many chats the verb gate passed everything. Factual verbs are per-language now,
+   and the Hindi past copula is covered by `tha`/`thi`/`thay` instead.
+
+### The change that mattered most
+
+Scoping Rigor to the arguments. Applicability used to be computed once for the whole chat, so one real
+argument inside thirty conversations averaged into nothing. It is now decided per episode, and the lens
+scores only the conversations where people are both asserting and disagreeing.
+
+On a real three-year chat this took the claim ledger from 112 entries — mostly flat-hunting, `"My stipend
+is too low"`, `"I got 1bhk brand new"` — to 103 entries drawn entirely from the two political arguments
+buried inside it, and cut "questions nobody answered" from 84 to 44. The lens went from `weak` to fitting.
+
+### Known residual
+
+The five claim-detection errors that remain are evaluative sentences a word list cannot separate from
+assertions: *"It is political in every way possible"* against *"It was violence for a political cause"*.
+That distinction needs semantics, and it is what the optional local-model tier is for — never the web app,
+which stays sealed and heuristic.
+
+The gold set is 77 claim candidates, 20 questions and 9 episodes. That is enough to catch a regression and
+not enough to justify a decimal place; treat differences under a few points as noise. The fixture is also
+somewhat easier than the real chat it was modelled on — on the real export the question classifier finds
+fewer rhetorical questions than a human would, because the rhetorical frames are written for English and
+Hindi and not for Bengali.
+
+### The second opinion, and why it is optional
+
+The residual above is what the optional local-model tier is for:
+
+```bash
+threadlens analyse chat.txt --deep --backend ollama --model qwen2.5:3b
+```
+
+It asks a model running on your own machine the same question the claim gate asks, and prints where the two
+disagree. It never decides whether a claim is true, it changes no score, and the heuristic verdict stays
+beside its own. It is loopback-only and off by default; the web app cannot reach it at all.
+
+On the hardware this was developed on (4 GB VRAM) the largest model that loads is a 3B, and a 3B is close to
+guessing at this task — it disputed `Two officers were suspended in November`, which is unambiguously a claim.
+So when agreement falls below 50% the report says outright that the model is the likelier problem. Treat the
+disagreement list as somewhere to look, never as a correction to apply.
+
+Re-run `make eval` after any change to the gates or the lexicons. A change that improves a score it was
+not aimed at deserves as much suspicion as one that breaks a score it was.
 
 ---
 

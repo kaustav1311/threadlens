@@ -6,7 +6,7 @@
     threadlens
   </a>
   <nav class="nav" aria-label="Page">
-    <a href="#lenses">What it shows</a>
+    <a href="#lenses">What it asks</a>
     <a href="#faq">How it works</a>
     <a href="#privacy">Privacy</a>
     <a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source</a>
@@ -14,10 +14,21 @@
 </header>
 
 <main>
+  <!--BUILD:LOCAL-BANNER-->
   <section class="wrap hero" aria-labelledby="h1">
     <div class="hero-copy">
-      <h1 id="h1">Who actually <em>started</em> it?</h1>
-      <p class="lede">Export the argument. Drop it in. Threadlens counts what both of you did &mdash; questions asked, claims made, sources given, goalposts moved &mdash; and applies the exact same ruler to each of you. Then you can stop arguing about who was worse and go read the evidence.</p>
+      <p class="eyebrow">The compatibility test for people who argue</p>
+      <!-- Each question here is one the report genuinely answers. The carousel is
+           built in app.js; this markup is the no-JS fallback and the first slide. -->
+      <h1 id="h1" class="rotator" data-rotator>
+        <span class="rot-line" data-q>Who actually <em>started</em> it?</span>
+      </h1>
+      <p class="lede">Six questions, one chat export, no opinions. Threadlens counts what each of you actually
+        did &mdash; who asked, who asserted, who sourced it, who changed the subject, whose temper moved first &mdash;
+        and applies the exact same ruler to both. It will not tell you who was right. It will make that argument
+        a great deal harder to keep having.</p>
+      <p class="sources">Works on <b>WhatsApp</b>, <b>Instagram</b>, <b>Messenger</b>, <b>Twitter&thinsp;/&thinsp;X</b>,
+        <b>Discord</b>, <b>Reddit</b> &mdash; an export, or just the messages copied off the screen.</p>
     </div>
 
     <div class="drop">
@@ -27,13 +38,13 @@
       </div>
       <div class="drop-body">
         <div class="zone" id="zone" tabindex="0" role="button" aria-describedby="drop-formats">
-          <strong id="drop-title">Drop the chat export here</strong>
-          <span class="formats" id="drop-formats">.zip, .txt or .docx &middot; up to 25&nbsp;MB &middot; or paste it</span>
+          <strong id="drop-title">Drop the chat in here</strong>
+          <span class="formats" id="drop-formats">.zip, .txt or .docx &middot; up to 25&nbsp;MB &middot; or paste the messages straight in</span>
           <span class="line-sample" aria-label="Example of an export line">21/09/2026, 01:02 - Ravi: Ok since you love &ldquo;facts&rdquo; so much&hellip;</span>
           <div class="row center">
             <button class="btn primary" id="pick" type="button">Choose file</button>
             <button class="btn" id="paste-toggle" type="button">Paste text</button>
-            <button class="btn ghost" id="load-sample" type="button">Load the sample</button>
+            <button class="btn ghost" id="load-sample" type="button">Try the sample</button>
           </div>
           <input type="file" id="file" accept=".txt,.zip,.docx,text/plain,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
         </div>
@@ -48,7 +59,7 @@
         </div>
         <div class="opts">
           <label>This chat is with
-            <select id="relation" title="Sets which lens opens first and which findings are worth surfacing. It never changes how anything is scored.">
+            <select id="relation" title="Reorders the report so the part most likely to matter comes first. It never changes how anything is scored.">
               <option value="">Not saying</option>
               <option value="partner">A partner</option>
               <option value="family">Family</option>
@@ -68,21 +79,18 @@
   </section>
 
   <ul class="wrap chips" aria-label="What this is">
-    <li><span class="ic" aria-hidden="true">01</span><span><b>It never leaves this tab.</b> No upload, no server, no account. The page is built so it physically cannot phone home.</span></li>
-    <li><span class="ic" aria-hidden="true">02</span><span><b>One ruler, both sides.</b> Every number is counted the same way for everyone, and every one of them shows its working.</span></li>
-    <li><span class="ic" aria-hidden="true">03</span><span><b>It will not take your side.</b> That is the entire discipline. Free, MIT, and the scoring is written down in the open.</span></li>
+    <li><span class="ic" aria-hidden="true">01</span><span><b>It never leaves this tab.</b> No upload, no server, no account. The page is built so that it physically cannot phone home.</span></li>
+    <li><span class="ic" aria-hidden="true">02</span><span><b>One ruler, both sides.</b> Every number is counted the same way for each of you, every one shows its working, and none of them takes a side.</span></li>
+    <li><span class="ic" aria-hidden="true">03</span><span><b>It reads how you actually type.</b> Half English, half Bangla, half Hindi, no punctuation. It works out which languages are in play and stops treating <span class="mono">ami</span> and <span class="mono">kore</span> as rare insights.</span></li>
+    <li><span class="ic" aria-hidden="true">04</span><span><b>It admits when it is the wrong tool.</b> It finds the arguments inside your chat and scores only those. Three years of flat-hunting is not a debate, and it will say so rather than grade it.</span></li>
+    <li><span class="ic" aria-hidden="true">05</span><span><b>Open lists, open models.</b> MIT, every word list readable and editable in one file. Run it deeper offline and it uses open models &mdash; toxicity, fallacy and contradiction &mdash; or your own local ones.</span></li>
   </ul>
 
+  <!-- One report, not five. This nav is built from the sections that actually
+       rendered, so it never offers a view of something the chat does not support. -->
   <div class="lensbar" id="lensbar">
     <div class="wrap">
-      <div class="seg" role="group" aria-label="Choose a lens" id="seg">
-        <span class="pill-slide" aria-hidden="true" id="pill"></span>
-        <button type="button" data-lens="overview" aria-pressed="false">Overview</button>
-        <button type="button" data-lens="debate" aria-pressed="true">Debate</button>
-        <button type="button" data-lens="rigor" aria-pressed="false">Rigor</button>
-        <button type="button" data-lens="personal" aria-pressed="false">Personal</button>
-        <button type="button" data-lens="work" aria-pressed="false">Work</button>
-      </div>
+      <nav class="seg" aria-label="Jump to a section" id="seg"></nav>
       <p class="lens-blurb" id="lens-blurb"></p>
     </div>
   </div>
@@ -91,28 +99,33 @@
   <div class="toastbox" id="toastbox" aria-live="polite" aria-atomic="false"></div>
 
   <section class="wrap section" id="lenses" aria-labelledby="lenses-h">
-    <h2 id="lenses-h">Five lenses, five questions</h2>
-    <p class="lede-sm">Same chat, same numbers. Each lens just asks a different thing of them.</p>
+    <h2 id="lenses-h">Six questions, one report</h2>
+    <p class="lede-sm">One page, read top to bottom. Every section is the same numbers counted the same way for
+      each of you &mdash; and a section that this chat cannot answer does not appear at all.</p>
     <div class="faq">
       <details open>
-        <summary>Overview &mdash; who talked, and when?</summary>
-        <p>Share of messages, words per message, who starts conversations after a six-hour gap, median reply time, and what hours you both keep. The baseline everything else sits on.</p>
+        <summary>Who actually started it?</summary>
+        <p>Your chat is split into conversations at six-hour gaps, and each one has a person who opened it. Alongside that: share of messages, words per message, median reply time and the hours you each keep. The baseline everything else sits on.</p>
       </details>
       <details>
-        <summary>Debate &mdash; how was the argument conducted?</summary>
-        <p>Questions versus assertions, absolutist words (<span class="mono">always, never, everyone</span>), evidence words, group labels, status put-downs, and a 0&ndash;1 heat trend. Plus moral vocabulary &mdash; whether one of you argues from fairness and the other from loyalty, which is usually why you are talking past each other.</p>
+        <summary>Do you even speak the same language?</summary>
+        <p>Literally. It works out whether a chat is English, romanised Bengali, romanised Hindi or a mix, and treats each one's function words as function words. Then it compares how much of each other's vocabulary you actually pick up &mdash; and how often one of you answers in a register the other never uses.</p>
       </details>
       <details>
-        <summary>Rigor &mdash; who actually argued well?</summary>
-        <p>A score out of 100 for each person built from sourcing, answering the other's questions, staying on topic, conduct, hedging, and owning a mistake. It comes with a ledger of every factual claim and whether it cited anything. It says nothing about who is right, and it is built so that it <em>cannot</em>.</p>
+        <summary>Which of you brings receipts?</summary>
+        <p>Every factual-sounding sentence goes in a ledger with whether it pointed at anything checkable: a link, a named report, a date, a number. Threadlens never marks a claim true or false. It tells you which ones are worth going and checking.</p>
       </details>
       <details>
-        <summary>Personal &mdash; who is carrying this?</summary>
-        <p>Who reaches out first, who replies faster, affection and apology words, and how the tone moved over time. Useful when the honest question is whether one of you has quietly stopped trying.</p>
+        <summary>Who actually answers the question?</summary>
+        <p>Questions come in three kinds and only one is a debt. A check-in like <span class="mono">Wbu?</span> wants acknowledgement; a whataboutism wants a point scored; a real question wants an answer. Only the last kind can go unanswered, which is why this number is finally believable.</p>
       </details>
       <details>
-        <summary>Work &mdash; is this thread functioning?</summary>
-        <p>Responsiveness, action words, urgency words, politeness, and after-hours load. Handy evidence when someone insists they are &ldquo;always available&rdquo;.</p>
+        <summary>Whose temper turns up first?</summary>
+        <p>A 0&ndash;1 heat trend per person over time, absolutist words, group labels, status put-downs and profanity &mdash; plus moral vocabulary, which is often why you are talking past each other: one of you is arguing from fairness and the other from loyalty.</p>
+      </details>
+      <details>
+        <summary>Are you even arguing about the same thing?</summary>
+        <p>Drift from what each conversation opened on, and the moments someone changed the subject right after being challenged. This section only appears when your chat actually contains an argument &mdash; on three years of small talk it says so instead of scoring one.</p>
       </details>
     </div>
   </section>
@@ -120,9 +133,9 @@
   <section class="wrap section" id="faq" aria-labelledby="faq-h">
     <h2 id="faq-h">How it works</h2>
     <ol class="steps">
-      <li><h3>Export</h3><p>WhatsApp &rarr; the chat &rarr; <b>More &rarr; Export chat &rarr; Without media</b>.</p></li>
-      <li><h3>Drop it in</h3><p>Android or iPhone, 12- or 24-hour, .txt, .zip or a Word copy. It is read in this tab.</p></li>
-      <li><h3>Pick a lens</h3><p>Then open any number to see exactly how it was counted.</p></li>
+      <li><h3>Get the chat out</h3><p>WhatsApp &rarr; the chat &rarr; <b>More &rarr; Export chat &rarr; Without media</b>. Instagram, Messenger, Twitter&thinsp;/&thinsp;X and Discord all have a data export too &mdash; or just select the messages and copy them.</p></li>
+      <li><h3>Drop it in</h3><p>Android or iPhone, 12- or 24-hour, .txt, .zip or a Word copy. Timestamps are optional: pasted messages are read in order. It never leaves this tab.</p></li>
+      <li><h3>Read the answer</h3><p>It finds the arguments, scores those and leaves the small talk alone. Open any number to see exactly how it was counted.</p></li>
     </ol>
 
     <div class="faq">
@@ -131,16 +144,28 @@
         <p>Counting, carefully, and telling you so. Word lists, phrase patterns and a few small formulas &mdash; no black box and no model deciding what you meant. The full method, every weight and every threshold is written up in <a href="https://github.com/kaustav1311/threadlens/blob/main/docs/SCORING.md" rel="noopener">docs/SCORING.md</a>, and the word lists are a single readable JSON file you can send a pull request against.</p>
       </details>
       <details>
+        <summary>&ldquo;Compatibility test&rdquo; &mdash; does it score our compatibility?</summary>
+        <p>No, and it never will. There is no compatibility number anywhere in this tool, and adding one is the single change it is built to make difficult. What it does is answer the six questions in the headline with counts, side by side, using the same ruler for each of you &mdash; who opened, who sourced, who answered, who changed the subject. Whether that adds up to compatible is a judgement, and it is yours. The satire is in the framing. The numbers underneath are deadly literal.</p>
+      </details>
+      <details>
         <summary>Can it tell me if my relationship is in trouble?</summary>
         <p>No, and be suspicious of anything that says it can. It can show you that one of you starts 80% of the conversations, or that the warmth fell off a cliff in March, or that neither of you has asked the other a question in six weeks. Those are worth a conversation. They are not a diagnosis, and a chat log is a thin slice of a relationship.</p>
       </details>
       <details>
+        <summary>Does it work if we type in two languages at once?</summary>
+        <p>Better than it used to. It works out which languages a chat is actually written in &mdash; English, romanised Bengali, romanised Hindi &mdash; and treats each one's function words as function words. Before that, <span class="mono">ami</span>, <span class="mono">kore</span> and <span class="mono">theke</span> read as rare, distinctive terms, which meant the &ldquo;topic&rdquo; of a conversation came out as noise and half of what looked like an unanswered question was <span class="mono">Wbu?</span>. Tone and heat still undercount non-English, because the sentiment lexicon is English.</p>
+      </details>
+      <details>
         <summary>What will it get wrong?</summary>
-        <p>Sarcasm, every time. Quoting someone else's insult counts against you. Romanised Hindi and other mixed languages are only partly covered, so tone and heat undercount them. Comparisons switch off below 150 words per person, because short chats say nothing. Read the messages, not just the bars.</p>
+        <p>Sarcasm, every time. Quoting someone else's insult counts against you. Tone and heat undercount every language the sentiment lexicon does not cover. It can tell an assertion from a plan or a piece of advice most of the time, but not an assertion from a strongly-worded opinion &mdash; <span class="mono">it was violence for a political cause</span> is a claim, <span class="mono">it is political in every way</span> is not, and a word list cannot see the difference. Comparisons switch off below 150 words per person. Read the messages, not just the bars.</p>
       </details>
       <details>
         <summary>Is there a command-line version?</summary>
         <p>Yes, and an optional self-hosted API, both offline. <span class="mono">pip install threadlens</span>, then <span class="mono">threadlens analyse chat.zip --lens rigor --ledger claims.json</span> exports the claim ledger for you &mdash; or an LLM &mdash; to fact-check. Local ML models (toxicity, fallacy classification, self-contradiction detection) live behind the <span class="mono">[deep]</span> extra.</p>
+      </details>
+      <details>
+        <summary>Which open-source parts is this built on?</summary>
+        <p>All of them. Tone uses the <b>VADER</b> lexicon (MIT, Hutto &amp; Gilbert); the absolutist word list follows Al-Mosaiwi &amp; Johnstone; the moral vocabulary follows Moral Foundations Theory; everything else is an original list in one readable JSON file. The page itself has no dependencies at all beyond a zip reader, which is why it fits in a single file you can save and run offline. Run it deeper on your own machine and the <span class="mono">[deep]</span> extra adds <b>Detoxify</b>, an open fallacy classifier and a local <b>NLI</b> model for self-contradiction &mdash; or point it at a model you already run locally. Nothing is ever sent anywhere, and no model gets a vote in the web app's numbers.</p>
       </details>
     </div>
   </section>
@@ -151,7 +176,7 @@
     <div class="faq">
       <details open>
         <summary>How can I be sure?</summary>
-        <p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser refuses to let it open a network connection at all &mdash; even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off; it behaves identically. There is no server, no account, no cookie and no analytics, and a test in the repo fails the build if anyone adds one.</p>
+        <!--BUILD:NETWORK-CLAIM--><p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser refuses to let it open a network connection at all &mdash; even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off; it behaves identically. There is no server, no account, no cookie and no analytics, and a test in the repo fails the build if anyone adds one.</p>
       </details>
       <details>
         <summary>Should I be analysing someone else's messages?</summary>

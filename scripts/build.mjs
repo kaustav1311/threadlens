@@ -38,11 +38,34 @@ const stripComments = s => s
 // The JSON in lexicons/ is kept pretty-printed so diffs are reviewable; inline it minified.
 const json = p => JSON.stringify(JSON.parse(r(p)));
 
+/**
+ * VADER as JSON is 7,506 entries and 119 KB — a third of the page budget spent on
+ * quotes, colons and commas. Packed as `word score~word score` with the score in
+ * tenths it is 96 KB. Lossless: VADER is specified to one decimal place, and the
+ * build asserts that below rather than trusting it. core.js unpacks it.
+ *
+ * The separator is "~": the lexicon includes emoticons, so most ASCII punctuation
+ * appears inside a key. The assertion below is what caught "(-:|>*".
+ */
+const VADER_SEP = '~';
+
+function packVader(p) {
+  const v = JSON.parse(r(p));
+  const keys = Object.keys(v);
+  for (const k of keys) {
+    if (Math.abs(v[k] - Math.round(v[k] * 10) / 10) > 1e-9) throw new Error(`vader value for "${k}" needs more than one decimal: ${v[k]}`);
+    if (k.includes(VADER_SEP)) throw new Error(`vader key contains the packing separator: ${k}`);
+  }
+  return JSON.stringify(keys.map(k => k + ' ' + Math.round(v[k] * 10)).join(VADER_SEP));
+}
+
+const publicBody = body.replace(/<!--BUILD:[A-Z-]+-->/g, '');
+
 const scripts = env => [
   r('web/vendor/jszip.min.js'),
   `window.TL_ENV=${JSON.stringify(env)};`
   + `window.TL_LEX=${safe(json('lexicons/lexicons.json'))};`
-  + `window.TL_VADER=${safe(json('lexicons/vader.json'))};`
+  + `window.TL_VADER=${safe(packVader('lexicons/vader.json'))};`
   + `window.TL_SAMPLE=${safe(JSON.stringify(r('samples/sample_debate_android.txt')))};`,
   stripComments(coreSrc),
   r('web/src/app.js'),
@@ -52,9 +75,9 @@ const scripts = env => [
 const CORE_INDEX = 2;
 const tagFor = i => (i === CORE_INDEX ? '<script id="tl-core">' : '<script>');
 
-const title = 'Threadlens — see how the argument actually went';
-const desc = 'Free, private chat analysis in your browser. Drop in a WhatsApp export and see who asked and who asserted, who started it, where the heat rose, and how well each side argued. Works on relationship arguments, family group chats and work threads. Nothing is uploaded.';
-const keywords = 'whatsapp chat analysis, argument analysis, who started the argument, relationship communication patterns, couples arguing over text, group chat analysis, conversation analysis, communication style, chat statistics, debate quality, private, offline';
+const title = 'Threadlens — the compatibility test for people who argue';
+const desc = 'The compatibility test for people who argue. Drop in a chat from WhatsApp, Instagram, Messenger, X, Discord or Reddit and see who started it, who brings receipts, who actually answers, and whether you are even arguing about the same thing. Same ruler for both sides, no verdict, nothing uploaded.';
+const keywords = 'chat compatibility test, whatsapp chat analysis, argument analysis, who started the argument, relationship communication patterns, couples arguing over text, group chat analysis, conversation analysis, communication style, chat statistics, debate quality, code switching, hinglish, banglish, private, offline';
 
 mkdirSync(join(root, 'dist'), { recursive: true });
 
@@ -85,7 +108,7 @@ mkdirSync(join(root, 'dist'), { recursive: true });
 <style>${css}</style>
 </head>
 <body>
-${body}
+${publicBody}
 ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 </body>
 </html>
@@ -93,21 +116,89 @@ ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
   writeFileSync(join(root, 'dist/index.html'), html);
 }
 
+/* ---------------------------------------------------------- local-model build
+ * A SEPARATE page that is allowed to talk to a model running on your own machine,
+ * and nothing else. It exists because the sealed page cannot do the one judgement
+ * a word list cannot make — assertion versus strongly-worded opinion — and some
+ * people would rather run a model than accept that limit.
+ *
+ * It is deliberately a different file with a different name:
+ *   - dist/index.html keeps `connect-src 'none'` and is the only thing deployed.
+ *   - .github/workflows/pages.yml publishes index.html, never this.
+ *   - .gitignore excludes it, so it cannot be committed by accident.
+ *   - build.test.js asserts the sealed page never gains a connect-src.
+ * The privacy copy changes in the same build, because a page that can reach the
+ * network must not carry a page's claim that it cannot.
+ */
+const LOCAL_ORIGIN = 'http://127.0.0.1:11434';
+const LOCAL_BANNER = `<div class="wrap local-banner" role="note">`
+  + `<b>Local-model build.</b> This copy of the page is allowed to talk to a model running on this machine `
+  + `at <span class="mono">${LOCAL_ORIGIN}</span>, and to nothing else. It is not the version published at `
+  + `the public address, which cannot open a network connection at all. Do not host this file anywhere.`
+  + `</div>`;
+const LOCAL_CLAIM = `<p>Not this build. The published page ships a Content-Security-Policy of `
+  + `<span class="mono">connect-src 'none'</span> and cannot open a connection at all — but you are reading `
+  + `the <b>local-model build</b>, whose policy allows exactly one destination: `
+  + `<span class="mono">${LOCAL_ORIGIN}</span>, an ollama server on this machine. Everything else is still `
+  + `refused, nothing is uploaded, and the analysis still happens in this tab. If you want the sealed `
+  + `guarantee, use <span class="mono">dist/index.html</span> instead.</p>`;
+
+{
+  // Markers must exist, or the local build would silently ship the sealed page's
+  // privacy claim while being able to reach the network.
+  for (const marker of ['<!--BUILD:LOCAL-BANNER-->', '<!--BUILD:NETWORK-CLAIM-->']) {
+    if (!body.includes(marker)) throw new Error(`web/src/body.html is missing ${marker}`);
+  }
+  const localBody = body
+    .replace('<!--BUILD:LOCAL-BANNER-->', LOCAL_BANNER)
+    .replace(/<!--BUILD:NETWORK-CLAIM-->\s*<p>[\s\S]*?<\/p>/, LOCAL_CLAIM);
+  const s = scripts('local');
+  const hashes = s.map(js => `'sha256-${createHash('sha256').update(js, 'utf8').digest('base64')}'`).join(' ');
+  const csp = `default-src 'none'; script-src ${hashes}; style-src 'unsafe-inline'; img-src data: blob:; connect-src ${LOCAL_ORIGIN}; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; worker-src blob:`;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>${title} — local-model build</title>
+<style>${css}
+.local-banner { border: var(--rule) solid var(--warn); background: var(--warn-soft); color: var(--ink); padding: var(--pad); margin-block: var(--space-5); font-size: var(--text-sm); }
+</style>
+</head>
+<body>
+${localBody}
+${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
+</body>
+</html>
+`;
+  writeFileSync(join(root, 'dist/index-local.html'), html);
+}
+
 // Fragment for artifact-style hosts
 {
   const s = scripts('artifact');
   const html = `<title>${title}</title>
 <style>${css}</style>
-${body}
+${publicBody}
 ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 `;
   writeFileSync(join(root, 'dist/threadlens-artifact.html'), html);
 }
 
 // The page has to stay small enough to be worth downloading and running offline.
-const BUDGET_KB = 400;
+// It is one file with no network of any kind behind it, so everything it will ever
+// need — the code, the word lists, the sentiment lexicon, the zip reader — ships in
+// that number. The cap is a guard against drifting into a multi-megabyte page by
+// accident, not a target: at the time of writing the build comes in around 370 KB.
+// Before raising this again, check whether the growth is data (pack it, as VADER is
+// packed above) or code (it probably needs deleting).
+const BUDGET_KB = 600;
 const kb = statSync(join(root, 'dist/index.html')).size / 1024;
-console.log(`built dist/index.html (${kb.toFixed(0)} KB) and dist/threadlens-artifact.html`);
+console.log(`built dist/index.html (${kb.toFixed(0)} KB), dist/threadlens-artifact.html and dist/index-local.html`);
 if (kb > BUDGET_KB) {
   console.error(`dist/index.html is ${kb.toFixed(0)} KB, over the ${BUDGET_KB} KB budget.`);
   process.exit(1);

@@ -14,21 +14,31 @@ The Python package mirrors the same scoring for the CLI, a self-hosted API, and 
  web/vendor/jszip.min.js                                                                             │
         │                                                                                            │
  scripts/build.mjs ──► dist/index.html             full page, CSP: connect-src 'none', script hashes │
+                  ├──► dist/index-local.html        SEPARATE build, CSP allows 127.0.0.1:11434 only  │
+                  │                                 gitignored, never deployed, own privacy copy      │
                   └──► dist/threadlens-artifact.html  body fragment for artifact hosts (no downloads) │
  scripts/rigor-dump.mjs  emits the JS rigor result so pytest can diff it against Python              │
+ scripts/items.mjs   the units the eval gold set is labelled over — labeller and harness share it    │
+ scripts/eval.mjs    `make eval`: P/R/F1 for the claim, question and is-it-an-argument gates         │
+ dev/label.mjs       dev-only: pre-labels a local export with a local ollama model (never committed) │
                                                                                                      │
  python/threadlens/  parser.py · metrics.py · report.py (mirror core.js) ◄── data/*.json (make sync) ┘
                      rigor.py  (mirrors the rigor section of core.js, constant for constant)
                      deep.py   (Detoxify + fallacy classifier + local NLI self-contradiction, [deep])
-                     cli.py    (`threadlens analyse|serve`, `--lens rigor`, `--ledger out.json`)
+                     ollama.py (optional second opinion from a local model; --backend ollama, loopback only)
+                     cli.py    (`threadlens analyse|serve`, `--lens rigor`, `--ledger out.json`, `--backend`)
                      server.py (FastAPI, in-memory per-IP rate limits, 10 MB cap, no disk, no body logs)
 ```
 Data flow: export text → `parseChat` (Android/iOS, 12/24h, date-order detection) → messages → `analyse` (per-person
 counts, per-100-word rates, heat, sentiment, moral words, rhetoric regexes, reply times, day series) → `findings(lens)`
-(symmetric comparisons, off below 150 words/person) → UI or Markdown/JSON.
+(symmetric comparisons, off below 150 words/person) → UI or Markdown/JSON. `findings(lens)` still takes a lens
+because the Markdown report does; the page merges every lens and de-duplicates. `findings(lens)` still takes a lens
+because the Markdown report does; the page merges all of them and de-duplicates.
 
-`res.rigor` is a **lazy getter**: it is the most expensive pass and only one lens needs it, so four of the five
-lenses never pay for it. Touching `res.rigor` computes it once and caches it.
+`res.rigor` is a **lazy getter**: it is the most expensive pass, so nothing pays for it until a caller touches it.
+Touching `res.rigor` computes it once and caches it. The UI is **one page**, not five lenses: `render()` emits
+sections (summary · measures · timeline · tone · rigor) and a section only appears when the chat supports it.
+The relationship selector reorders the section nav and nothing else.
 
 Large exports (≥400k characters) are analysed in a **Web Worker** built from a Blob of `core.js`, which is why the
 CSP allows `worker-src blob:`. The worker's copy of the source is read back off the page's own
@@ -38,8 +48,15 @@ the main thread and the result is identical.
 ## Commands
 - `make test`: builds, then JS tests (`node --test "web/test/*.test.js"`) + Python tests (`cd python && pytest`)
 - `make build`: dist files. Rebuild before committing UI changes; dist is committed so the page works offline.
-  The build **fails** if `dist/index.html` exceeds 400 KB.
+  The build **fails** over `BUDGET_KB` in build.mjs (600 KB; the build is ~385 KB). If it ever gets close again,
+  pack the data rather than raise the number — VADER is inlined packed for exactly this reason, which is worth 23 KB.
 - `make sync`: copy lexicons into python/threadlens/data (a test fails if they drift)
+- `make eval`: score the claim / question / is-it-an-argument gates against the hand-labelled
+  `samples/labels_banglish_mixed.json`. **The primary gate for any scoring change** — `make test` proves the
+  two implementations agree, `make eval` proves they are right. `--errors` prints what each gate got wrong.
+  Baselines and the v0.2→v0.3 numbers are in docs/SCORING.md §6a.
+- `node dev/label.mjs <chat.txt>`: dev-only. Pre-labels a local export with a local ollama model to build a
+  gold set. Never run against anything that gets committed; `dev/out/` is gitignored.
 - `threadlens serve`: API at http://127.0.0.1:8000/docs
 
 ## Invariants (do not break)
@@ -59,6 +76,40 @@ the main thread and the result is identical.
    state, not sit at zero. Asserted in `web/test/build.test.js`.
 
 ## Scoring decisions worth not re-litigating
+- **One report, not five lenses.** Five views of the same containers meant reading a chat five times to find
+  the one that applied to it. Sections are earned: no timestamps → no timeline and no clip bar; no argument →
+  the rigor section says so instead of scoring one. Old `#rigor`-style links still resolve, via `LEGACY_ANCHOR`.
+- **Rates and totals live in the same container.** A rate answers "who leans on this more", a total answers
+  "how often did it actually happen", and a rate alone cannot tell four instances from four hundred. Every
+  `fmt: 'rate'` metric carries a `count:` naming its raw-count key, and `stats[].counts` holds them.
+- **Chart axes round the STEP, never the label.** The old ladder drew a 120-message peak on an axis to 200,
+  and dividing any top into four put a gridline at 2.5 and labelled it "3". `axisTicks` picks a round step, a
+  top that is a multiple of it, and 3–6 lines. The day chart's x axis is proportional to real time, so a
+  two-day gap and an eleven-month silence are no longer drawn the same width apart.
+- **The local-model tier never touches the web app.** `--backend ollama` gives a second opinion on the one
+  judgement a word list cannot make (assertion vs strongly-worded opinion). Loopback only, off by default,
+  and it never decides whether a claim is TRUE — it keeps the heuristic's verdict beside its own. Low
+  agreement usually means the model is too small rather than the ledger being wrong, and the report says so.
+- **Rigor scores the arguments in a chat, never the whole chat.** Applicability is decided *per episode*:
+  an episode qualifies when people are both asserting (claims/message) and disagreeing (markers/message).
+  Either alone is not an argument — a stream of links is not, nor is a round of swearing. `rigor.applies`
+  is false when nothing qualifies, and then the ledger and the question list are **empty**: there is
+  deliberately no fallback to "score everything anyway", so a caller that ignores `applies` still cannot
+  print a confident analysis of an argument that never happened. This is what took a real chat's ledger
+  from 112 entries of flat-hunting to 103 entries that are all the actual argument.
+- **Three kinds of question, and only one is a debt.** `phatic` (asks for acknowledgement), `rhetorical`
+  (asked to score a point), `substantive` (actually wants an answer). Only substantive questions enter
+  Responsiveness or "questions nobody answered". Counting all three as one was most of what Responsiveness
+  used to measure. `questionMix` reports all three over the whole chat.
+- **A claim is an assertion about the world.** Obligation, plans, advice, requests, interior states
+  ("I feel", "we love"), talk about the conversation itself, and unmarked questions are all rejected —
+  see `rigor.modality`, `.meta_talk`, `.interior`, `.unmarked_question`. Meta-talk is only rejected when
+  the sentence carries nothing checkable: "I said ninety minutes was the ward office figure" names a
+  figure and stays a claim.
+- **Stopwords and factual verbs are per language, and the set is chosen by detection.** An English-only
+  chat is scored exactly as before; a Banglish one also gets `bn_latin`/`hi_latin`. Detection uses each
+  language's *distinctive* words (the ones English does not already claim), because the English list is
+  long and common enough to win on any text otherwise.
 - **Per-100-words normalises a description, never a deduction.** Conduct and Calibration use *incidence* (the
   share of a person's messages carrying the thing). The old per-100-word rule made a terse speaker with one
   insult score worse than a verbose one with five. `test_conduct_counts_messages_not_words` pins it.
@@ -73,6 +124,25 @@ the main thread and the result is identical.
   drift and the ledger are all computed on the clip. A bare `to` date means the whole of that day.
 
 ## Gotchas already paid for
+- **`dist/index-local.html` can reach the network; `dist/index.html` never can.** They are separate files on
+  purpose. The local build carries its own privacy copy (a page that CAN open a connection must not repeat the
+  sealed page's claim that it cannot), is gitignored, is `noindex`, and the Pages workflow copies only
+  `index.html`. `build.test.js` asserts all four. The swap is driven by `<!--BUILD:...-->` markers in
+  body.html and the build throws if one goes missing, so a copy edit cannot silently skip it.
+- **An opener list matched with `indexOf` matches inside words.** `intent_opener` held a bare `"id "` and
+  `"ill "`, so `"sa|id i|t was ninety minutes"` and `"st|ill s|ays"` both matched and any sentence with
+  *said*, *did* or *still* near its start was silently dropped as a statement of intent. Openers are
+  word-boundary anchored (`openerRe` / `_opener_re`) — same class of bug as the month prefix below.
+- **`"the"` was in `factual_verb`.** It is romanised Hindi for "they were", and it shares its spelling with
+  the commonest word in English, so the verb gate passed everything on any English chat. Factual verbs are
+  per-language now and the Hindi past copula is carried by `tha`/`thi`/`thay` instead. Watch for the same
+  trap with any romanised homograph: `sob`, `mane`, `kar`, `par`, `hai`.
+- **A URL's query string contains `?`.** A shared map pin was being counted as a question. Links are
+  stripped before the question test.
+- **The tokeniser splits `it's` into `it` + `s`**, so a copula contraction left the verb gate finding no
+  verb at all. `RE_CONTRACTED_IS` expands them before the check.
+- **Test fixtures built as "one message a day" are now N episodes of one**, and no episode of one is ever
+  an argument, so they produce an empty ledger. Build a fixture as one sitting if it needs to be scored.
 - A class with `display` beats the UA's `[hidden] { display: none }`. style.css carries a global `[hidden]` rule;
   without it `el.hidden = true` silently does nothing on `.progress` and friends.
 - `%` is not a word character, so `\d+\s*%\b` never matches "6% a year". Percent gets its own regex branch.
@@ -81,6 +151,11 @@ the main thread and the result is identical.
 - A leading space used to drop an exported line entirely (the `^` anchor). Pasted text nearly always has one,
   which was most of "paste doesn't work". Matching is done on a left-trimmed copy.
 - The separator may be `-`, an en dash or an em dash, with or without a space after it.
+- **The timestamp comes in four shapes, not two.** The clock may lead the date (`[10:07, 22/09/2026]`) and the
+  year may be absent entirely (`[10:07, 22/09]`) — that is what selecting messages on a phone and copying them
+  produces, and it is the most common paste. `headOf` / `_head` normalise all four to one canonical head
+  `(d1, d2, d3, hh, mm, ss, am/pm)` so nothing downstream knows the difference. A year-less line inherits the
+  last year seen and rolls forward by one if that would run the chat backwards (December → January).
 - `core.js` is emitted **once**, as `<script id="tl-core">`; app.js reads its own source off that tag to build
   the Worker. Embedding it a second time as a string cost ~38 KB and kept breaking the page budget.
 

@@ -43,3 +43,32 @@ def test_analysis_matches_expectations():
 def test_anonymise():
     res = Analyzer().analyse(parse_chat(SAMPLE), anonymise=True)
     assert sorted(res["people"]) == ["Person A", "Person B"]
+
+
+def test_undated_transcript_is_read_in_order():
+    """Copying the message bubbles instead of exporting gives names and text but no
+    clock. That used to produce "none of them carry a timestamp"."""
+    t = "\n".join([
+        "Riya: Hiii", "Sourav: Yooo", "Riya: Kmn achis?", "Sourav: cholche cholche",
+        "Riya: the report says the backlog was 1,240 cases", "Sourav: thats not true at all",
+        "Riya: you people always do this", "Sourav: the audit from October put it at 1,240",
+    ])
+    p = parse_chat(t)
+    assert p["undated"] is True
+    assert len(p["messages"]) == 8
+    assert {m.author for m in p["messages"]} == {"Riya", "Sourav"}
+    dates = [m.date for m in p["messages"]]
+    assert dates == sorted(dates) and len(set(dates)) == len(dates)
+    res = Analyzer().analyse(p)
+    assert res["undated"] is True
+
+
+def test_real_export_is_never_undated():
+    p = parse_chat((ROOT / "samples/rigor_left_vs_right.txt").read_text("utf-8"))
+    assert p["undated"] is False
+    assert len(p["messages"]) > 20
+
+
+def test_prose_with_a_colon_is_not_a_speaker():
+    p = parse_chat("Here is the thing: it was never about the money.\nAnd another line.")
+    assert p["messages"] == []

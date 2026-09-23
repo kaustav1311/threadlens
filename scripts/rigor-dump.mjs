@@ -18,6 +18,10 @@ const res = core.createAnalyzer(lex, vader).analyse(core.parseChat(readFileSync(
 const G = res.rigor;
 const out = {
   topicTerms: G.topicTerms,
+  languages: G.languages,
+  applies: G.applies,
+  episodesScored: G.episodesScored,
+  questionMix: G.questionMix,
   people: Object.fromEntries(Object.keys(G.people).map(n => {
     const p = G.people[n];
     return [n, {

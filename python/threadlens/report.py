@@ -36,7 +36,11 @@ METRICS = [
 ]
 MORAL = {"care": "Care / harm", "fairness": "Fairness / justice", "loyalty": "Loyalty / nation", "authority": "Authority / respect", "purity": "Purity / disgust"}
 RHET = {"whataboutism": "Whataboutism", "false_dilemma": "False choice", "exit_or_concession": "Exit or concession",
-        "unfalsifiable": "Unfalsifiable certainty", "evidence_request": "Asks for evidence", "personal_attack": "Personal attack"}
+        "unfalsifiable": "Unfalsifiable certainty", "evidence_request": "Asks for evidence",
+        "personal_attack": "Personal attack",
+        # The only cue here that marks a good move: qualifying a claim rather than
+        # asserting it flat. It sits beside the moves it is the antidote to.
+        "caveat": "Qualifies a claim"}
 
 
 def fmt_mins(m):
@@ -183,7 +187,35 @@ def to_markdown(res, lens, deep=None):
         if G["unanswered"]:
             md += ["", "## Questions that never got an answer", ""]
             md += [f"- **{q['who']}**, {_d(q['date'])}: {q['text']}" for q in G["unanswered"][:20]]
-    if deep:
+    if deep and deep.get("backend") == "ollama":
+        # A second opinion on the one judgement a word list cannot make. It is shown
+        # as agreement and disagreement, never as a correction: the heuristic's
+        # verdict stays visible beside the model's.
+        agree = deep.get("agreement") or {}
+        md += ["", "## Second opinion (local model)", "",
+               f"`{deep['model']}`, running on this machine, was asked the same question the claim gate "
+               "asks: is this sentence an assertion about the world? It was not asked whether anything "
+               "is true, and it changed no score.", ""]
+        if agree:
+            md += [f"Of {agree['checked']} ledger entries it agreed with {agree['agreed']} "
+                   f"({agree['agreement']:.0%}) and disputed {agree['disputed']}.", ""]
+            # Low agreement is far more often a small model than a bad ledger. Saying
+            # so is the difference between a useful second opinion and a list that
+            # sends a reader off to fix entries that were right.
+            if agree["checked"] >= 8 and agree["agreement"] < 0.5:
+                md += ["> The model disputed most of the ledger. On a small model that usually means the "
+                       "model, not the ledger: a 3B model asked to separate an assertion from a "
+                       "strongly-worded opinion is close to guessing. Check a handful by hand before "
+                       "trusting the list below, and try a larger model if you have the memory for one.", ""]
+        disputed = [r for r in deep.get("ledger_review", []) if not r["agree"]]
+        if disputed:
+            md += ["### Entries the model would not call a claim", "",
+                   "Where the two tiers disagree. Neither is authoritative; this is a list to read, "
+                   "not a correction to apply.", ""]
+            md += [f"- **{r['who']}**: {r['text']}" for r in disputed[:20]]
+        else:
+            md += ["The model agreed with every entry it was shown.", ""]
+    elif deep:
         md += ["", "## Deep models (local)", "", "| Measure | " + " | ".join(names) + " |", "|---|" + "|".join("---" for _ in names) + "|"]
         for key in deep["columns"]:
             md.append(f"| {key} | " + " | ".join(str(deep["per_person"].get(n, {}).get(key, "—")) for n in names) + " |")

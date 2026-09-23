@@ -61,6 +61,55 @@
     return out;
   }
 
+  // "Ravi: hello" — a transcript with no timestamps at all. A name is short and has
+  // no sentence punctuation in it, which is what separates this from an ordinary
+  // line of prose that happens to contain a colon.
+  const UNDATED = /^([^:\n]{1,40}):\s+(\S.*)$/;
+  const UNDATED_MIN_ROWS = 3;   // fewer than this is a stray colon, not a transcript
+  const UNDATED_EPOCH = Date.UTC(2000, 0, 1);
+  const UNDATED_STEP = 6e4;   // one minute between messages
+
+  /**
+   * Parse a transcript that carries an order but no times: copied message bubbles,
+   * a pasted screenshot transcription, notes from a call.
+   *
+   * Messages are given a synthetic timeline one minute apart. That keeps every
+   * downstream pass — episodes, reply gaps, the day series — working on real Date
+   * objects instead of spreading null checks through the whole scorer. It also
+   * makes those particular numbers meaningless, which is why `undated` is set:
+   * callers must HIDE anything time-derived rather than print an invented hour.
+   */
+  function tokenizeUndated(text) {
+    const lines = String(text).split(/\n/).map(cleanLine);
+    const out = [];
+    let seen = 0;
+    for (const line of lines) {
+      const probe = line.replace(/^\s+/, '');
+      if (probe) seen++;
+      const m = probe.match(UNDATED);
+      // A speaker is a name, not a clause: at most a few words and no sentence
+      // punctuation. Without that, "Here is the thing: it was never about the money"
+      // reads as a person called "Here is the thing".
+      const name = m ? m[1].trim() : '';
+      if (m && !/[.!?,;]/.test(name) && name.split(/\s+/).length <= 4) {
+        const at = new Date(UNDATED_EPOCH + out.length * UNDATED_STEP);
+        out.push({ head: null, author: name, date: at, rest: m[2] });
+      } else if (out.length && probe) {
+        out[out.length - 1].rest += '\n' + line;
+      }
+    }
+    out.lineCount = seen;
+    // A transcript reuses a small cast of speakers; prose that happens to contain
+    // colons invents a new "name" every time. That ratio is the reliable signal.
+    const authors = new Set(out.map(r => r.author));
+    if (out.length < UNDATED_MIN_ROWS || authors.size > Math.ceil(out.length / 2)) {
+      const empty = [];
+      empty.lineCount = seen;
+      return empty;
+    }
+    return out;
+  }
+
   function detectDateOrder(heads) {
     let dmy = 0, mdy = 0, ymd = 0;
     for (const h of heads) {
@@ -126,17 +175,24 @@
     // `to` is inclusive of the whole day when a bare date is given.
     let to = opts.to ? new Date(opts.to) : null;
     if (to && /^\d{4}-\d{2}-\d{2}$/.test(String(opts.to))) to = new Date(to.getTime() + 864e5 - 1);
-    const rows = tokenizeLines(String(text || ''), opts.onProgress);
-    const order = !opts.dateOrder || opts.dateOrder === 'auto' ? detectDateOrder(rows.map(r => r.head)) : opts.dateOrder;
+    let rows = tokenizeLines(String(text || ''), opts.onProgress);
+    // Not one timestamp anywhere: this is a transcript, not an export. Fall back
+    // rather than returning nothing, which is what "paste doesn't work" looked like
+    // when someone copied the bubbles instead of exporting the chat.
+    const undated = rows.length === 0;
+    if (undated) rows = tokenizeUndated(text);
+    const order = undated ? 'DMY'
+      : !opts.dateOrder || opts.dateOrder === 'auto' ? detectDateOrder(rows.map(r => r.head)) : opts.dateOrder;
     const messages = [];
     let system = 0;
     let clipped = 0;
     const ctx = { year: null, prev: null };
     for (const r of rows) {
-      const date = toDate(r.head, order, ctx);
+      const date = undated ? r.date : toDate(r.head, order, ctx);
       if (!date) continue;
-      if ((from && date < from) || (to && date > to)) { clipped++; continue; }
-      const rest = r.rest;
+      // A clip is a date range, and an undated transcript has no dates to clip by.
+      if (!undated && ((from && date < from) || (to && date > to))) { clipped++; continue; }
+      const rest = undated ? r.author + ': ' + r.rest : r.rest;
       const idx = rest.indexOf(': ');
       const nameCand = idx > 0 ? rest.slice(0, idx) : '';
       if (idx <= 0 || nameCand.length > 60 || /\n/.test(nameCand)) { system++; continue; }
@@ -148,12 +204,34 @@
     }
     return {
       messages, dateOrder: order, systemLines: system,
+      // `undated` means the timeline is synthetic. Every time-derived number —
+      // hours of day, reply gaps, the day series, the clip control — is an artefact
+      // of that and must be hidden rather than shown.
+      undated,
       lineCount: rows.lineCount || 0, firstLine: rows.firstLine || '',
       clipped, clip: from || to ? { from: from || null, to: to || null } : null,
     };
   }
 
   /* -------------------------------------------------------------- lexicons */
+
+  /**
+   * Unpack the VADER lexicon from the compact form the build inlines.
+   *
+   * As JSON it is 7,506 entries and 119 KB of a 400 KB page — a third of the whole
+   * download spent on quotes, colons and commas. Packed as `word score~word score`
+   * with the score as tenths it is 96 KB, and every value round-trips exactly:
+   * VADER is specified to one decimal place. The file in lexicons/ stays ordinary
+   * reviewable JSON; only the inlined copy is packed.
+   */
+  function unpackVader(s) {
+    const out = Object.create(null);
+    for (const pair of String(s).split('~')) {
+      const at = pair.lastIndexOf(' ');
+      if (at > 0) out[pair.slice(0, at)] = +pair.slice(at + 1) / 10;
+    }
+    return out;
+  }
 
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   const IS_WORDCHAR = /[\p{L}\p{N}']/u;
@@ -215,6 +293,81 @@
   function dayKey(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 
   /**
+   * Compile the rigor half of lexicons.json into the lookup shapes the scorer wants.
+   * Separate from createAnalyzer so tooling can reach the gates without building a
+   * whole analyzer over a chat it does not have.
+   */
+  /**
+   * One alternation from a list of phrase patterns, or null for an empty list.
+   * A single regex beats looping a hundred `indexOf`s per sentence, and these run
+   * on every question in the chat.
+   */
+  function phraseRe(list) {
+    if (!list || !list.length) return null;
+    return new RegExp(list.join('|'), 'i');
+  }
+
+  /**
+   * An opener list as one regex, anchored at word boundaries.
+   *
+   * Plain `indexOf` was silently rejecting real claims: the intent opener `"id "`
+   * matched inside `"sa|id i|t was ninety minutes"`, and `"ill "` matched inside
+   * `"st|ill s|ays"`. Any sentence with "said", "did" or "still" near its start was
+   * being read as a statement of intent and dropped before it could be scored.
+   * This is the same class of bug as a bare month prefix matching "market".
+   */
+  function openerRe(list) {
+    if (!list || !list.length) return null;
+    const alts = list.map(o => o.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean);
+    return new RegExp('\\b(?:' + alts.join('|') + ')\\b', 'i');
+  }
+
+  /** Does an opener frame this sentence — i.e. appear near enough to its start? */
+  function framedBy(re, lower) {
+    if (!re) return false;
+    const m = re.exec(lower);
+    return !!m && m.index < OPENER_WINDOW;
+  }
+
+  function compileRigor(lex) {
+    const rg = (lex && lex.rigor) || { stopwords: [], factual_verb: [], opinion_opener: [], intent_opener: [], source_term: [], concession: [], self_correction: [] };
+    // Stopwords moved out of `rigor` into their own per-language block. The fallback
+    // keeps an older lexicons.json working rather than scoring it wrongly in silence.
+    const sw = (lex && lex.stopwords) || { en: rg.stopwords || [] };
+    const by = {};
+    for (const code of Object.keys(sw)) by[code] = new Set(sw[code]);
+    if (!by.en) by.en = new Set();
+    // Factual verbs are per-language for the same reason: the romanised Hindi past
+    // copulas share spellings with English words, and scoping them means a verb can
+    // only act as one where its language was actually detected.
+    const fv = rg.factual_verb;
+    const verbsBy = Array.isArray(fv) ? { en: new Set(fv) } : {};
+    if (!Array.isArray(fv)) for (const code of Object.keys(fv || {})) verbsBy[code] = new Set(fv[code]);
+    if (!verbsBy.en) verbsBy.en = new Set();
+    return {
+      stopwordsBy: by,
+      // The default set is English alone: the same words the scorer used before any
+      // language detection existed, so a chat with no detected code-switching is
+      // scored exactly as it was.
+      stopwords: by.en,
+      factualVerbBy: verbsBy,
+      factualVerb: verbsBy.en,
+      opinionOpener: openerRe(rg.opinion_opener),
+      intentOpener: openerRe(rg.intent_opener),
+      modality: phraseRe(rg.modality),
+      metaTalk: phraseRe(rg.meta_talk),
+      interior: phraseRe(rg.interior),
+      unmarkedQuestion: phraseRe(rg.unmarked_question),
+      backChannelExact: new Set((rg.back_channel_exact || []).map(s => s.toLowerCase())),
+      backChannelPhrase: phraseRe(rg.back_channel_phrase),
+      rhetoricalFrame: phraseRe(rg.rhetorical_frame),
+      sourceTerm: compileList(rg.source_term),
+      concession: compileList(rg.concession),
+      selfCorrection: compileList(rg.self_correction, true),
+    };
+  }
+
+  /**
    * @param {object} lex  lexicons.json
    * @param {object} vader  vader.json
    */
@@ -226,16 +379,7 @@
     }
     const MORAL = {}; for (const k of Object.keys(lex.moral)) MORAL[k] = compileList(lex.moral[k]);
     const RHET = {}; for (const k of Object.keys(lex.rhetoric)) RHET[k] = compileList(lex.rhetoric[k], true);
-    const rg = lex.rigor || { stopwords: [], factual_verb: [], opinion_opener: [], intent_opener: [], source_term: [], concession: [], self_correction: [] };
-    const R = {
-      stopwords: new Set(rg.stopwords),
-      factualVerb: new Set(rg.factual_verb),
-      opinionOpener: rg.opinion_opener.map(s => s.toLowerCase()),
-      intentOpener: (rg.intent_opener || []).map(s => s.toLowerCase()),
-      sourceTerm: compileList(rg.source_term),
-      concession: compileList(rg.concession),
-      selfCorrection: compileList(rg.self_correction, true),
-    };
+    const R = compileRigor(lex);
 
     // One pass over a message's tokens instead of one pass per word list.
     // A token that appears in several lists still increments each of them, so
@@ -370,6 +514,10 @@
           politicalLabel: rate('political_label'), status: rate('status_hierarchy'),
           laugh: p.c.laugh || 0, mock: p.c.mock || 0, caps: per100(p, p.capsWords),
           moral: Object.fromEntries(Object.keys(p.moral).map(k => [k, per100(p, p.moral[k])])),
+          // The same word lists as raw counts. A rate answers "who leans on this
+          // more", a count answers "how often did it actually happen" — and a rate
+          // alone leaves a reader unable to tell four instances from four hundred.
+          counts: { ...p.c, caps: p.capsWords },
           rhetoric: { ...p.rhet }, examples: p.examples, reentries: p.reentries,
           heatMean: mean(p.heat), heatFirst: mean(p.heat.slice(0, third)), heatLast: mean(p.heat.slice(-third)),
           hotMessages: p.heat.filter(h => h >= 0.5).length,
@@ -398,6 +546,9 @@
         range: { from: msgs[0].date, to: msgs[msgs.length - 1].date, days: days.length },
         totals: { messages: msgs.length, words: stats.reduce((a, s) => a + s.words, 0) },
         dateOrder: parsed.dateOrder,
+        // The source carried no timestamps, so `range`, `series`, `hours` and every
+        // reply-time number below are artefacts of a synthetic timeline. Hide them.
+        undated: !!parsed.undated,
       };
       // Rigor is the most expensive pass and only one lens needs it, so it is
       // computed on first access and cached. Four of the five lenses never pay for it.
@@ -442,7 +593,8 @@
   const RIGOR_FIT_WEAK = 0.4;      // below this fit, the UI warns rather than asserting
   const CALIBRATION_SPAN = 1.5;    // how far incidence must move to swing Calibration end to end
   const RIGOR_ANSWER_WINDOW = 6;   // messages after a question in which a reply still counts as answering it
-  const RIGOR_MIN_CLAIM_WORDS = 6; // shorter sentences are too thin to call a claim
+  const RIGOR_MIN_CLAIM_WORDS = 5; // shorter sentences are too thin to call a claim
+  const OPENER_WINDOW = 30;        // characters from the start of a sentence in which an opener still frames it
   const RIGOR_KEYWORD_MIN = 3;     // content words must be this long to count for overlap
   const RIGOR_ANSWER_SIM = 0.2;    // share of a question's distinctive weight a reply must echo to count as engaging with it
   const RIGOR_OVERLAP = 2;         // shared content words needed to link a reply to a claim
@@ -505,6 +657,157 @@
 
   function overlapCount(a, b) { let n = 0; for (const t of a) if (b.has(t)) n++; return n; }
 
+  const LANG_MIN_SHARE = 0.03;   // share of messages a language must tag to count as present
+  const LANG_MIN_MSGS = 5;       // ...and this many messages, so a handful of words is not a language
+
+  /**
+   * Which languages is this chat actually written in?
+   *
+   * Not a general language identifier — it answers one question: whose function
+   * words should be treated as function words. That matters because everything
+   * downstream (topic vectors, drift, question/answer overlap) decides what is
+   * "distinctive" by what is left after the stoplist. On a Bengali-English chat
+   * scored with an English-only stoplist, `ami`, `kore` and `theke` look like rare,
+   * highly distinctive terms, and the topic of every conversation comes out as noise.
+   *
+   * Detection uses each language's DISTINCTIVE words — the ones English does not
+   * already claim — because the English list is long and common enough to win on
+   * any text otherwise. English is always present: it is the fallback alphabet here.
+   *
+   * @returns {string[]} language codes, English first
+   */
+  function detectLanguages(messages, by) {
+    const codes = Object.keys(by).filter(c => c !== 'en');
+    if (!codes.length) return ['en'];
+    const distinct = {};
+    for (const c of codes) {
+      const s = new Set();
+      for (const w of by[c]) if (!by.en.has(w)) s.add(w);
+      distinct[c] = s;
+    }
+    const hits = {};
+    for (const c of codes) hits[c] = 0;
+    let n = 0;
+    for (const m of messages) {
+      if (!m.text) continue;
+      n++;
+      const toks = new Set(tokenize(m.text.toLowerCase()));
+      for (const c of codes) {
+        for (const t of toks) if (distinct[c].has(t)) { hits[c]++; break; }
+      }
+    }
+    const out = ['en'];
+    for (const c of codes) {
+      if (hits[c] >= LANG_MIN_MSGS && hits[c] / Math.max(n, 1) >= LANG_MIN_SHARE) out.push(c);
+    }
+    return out;
+  }
+
+  /** The union of several languages' word sets. */
+  function stopSetFor(codes, by) {
+    const out = new Set();
+    for (const c of codes) { const s = by[c]; if (s) for (const w of s) out.add(w); }
+    return out;
+  }
+
+  /**
+   * A copy of the compiled lexicon narrowed to the languages this chat is in.
+   * Everything language-scoped is resolved here, once, so the gates themselves stay
+   * a straight yes/no on a sentence.
+   */
+  function scopeRigor(R, languages) {
+    return Object.assign({}, R, {
+      stopwords: stopSetFor(languages, R.stopwordsBy),
+      factualVerb: stopSetFor(languages, R.factualVerbBy),
+      languages,
+    });
+  }
+
+  const RE_URL_G = /(?:https?:\/\/|www\.)\S+/gi;
+  // Trailing punctuation, emoji and spacing, so a bare "Wbu?" can be compared to a list.
+  const RE_BARE = /[^a-z' ]+/g;
+
+  /**
+   * Is this sentence a question, and of what kind? '' means it is not one.
+   *
+   * Three kinds, because they are three different things and only one of them is a
+   * debt. Counting them as one is why a chat full of "Wbu?" and "Mane?" reported
+   * dozens of questions nobody answered:
+   *
+   *   phatic      — asks for acknowledgement, not information. Answering "Kmn achis?"
+   *                 with an emoji is a complete answer.
+   *   rhetorical  — asked to score a point. The asker is not waiting to be told anything,
+   *                 so no one owes a reply.
+   *   substantive — genuinely requests information. Only these count.
+   *
+   * Split out of the scoring loop so the eval harness can measure this decision on
+   * its own, against a labelled set, rather than only through its effect on a score.
+   */
+  function questionKind(sent, sTok, stop, R) {
+    // A link's query string contains '?'. A shared map pin is not a question.
+    const bare = sent.replace(RE_URL_G, ' ');
+    if (bare.indexOf('?') < 0) return '';
+    const lower = bare.toLowerCase();
+    // Rhetorical first: a whataboutism is full of content words and would otherwise
+    // pass for a real question.
+    if (R && R.rhetoricalFrame && R.rhetoricalFrame.test(lower)) return 'rhetorical';
+    const stripped = lower.replace(RE_BARE, ' ').replace(/\s+/g, ' ').trim();
+    if (R && R.backChannelExact && R.backChannelExact.has(stripped)) return 'phatic';
+    if (R && R.backChannelPhrase && R.backChannelPhrase.test(lower)) return 'phatic';
+    // Nothing distinctive left after the stoplist: nothing was actually asked.
+    if (!contentWords(sTok, stop).length) return 'phatic';
+    return 'substantive';
+  }
+
+  /**
+   * Does this declarative sentence assert something checkable?
+   * An opinion, an offer, a plan or a request is not a claim. Counting them inflates
+   * the Sourcing denominator and makes a careful speaker look vague, so they are
+   * rejected here rather than scored as vague.
+   */
+  // "it's", "that's", "there's" are the copula, but the tokeniser splits them into
+  // "it" + "s" and the verb gate then finds no verb at all.
+  const RE_CONTRACTED_IS = /\b(it|that|this|there|he|she|what|who|here|one)['’]s\b/gi;
+
+  function isClaimSentence(lower, sTok, R, evidence) {
+    if (sTok.length < RIGOR_MIN_CLAIM_WORDS) return false;
+    const expanded = lower.replace(RE_CONTRACTED_IS, '$1 is');
+    const hasVerb = sTok.some(t => R.factualVerb.has(t)) || expanded !== lower;
+    // A bare citation — "Section 3 of the same report, page 12" — has no verb and is
+    // still a claim about where something can be checked.
+    if (!hasVerb && !(evidence && evidence.named && (evidence.stat || evidence.dated))) return false;
+    // A question that lost its question mark — chat writers drop it constantly.
+    if (R.unmarkedQuestion && R.unmarkedQuestion.test(lower)) return false;
+    if (framedBy(R.opinionOpener, lower)) return false;
+    if (framedBy(R.intentOpener, lower)) return false;
+    // What the speaker feels, wants or minds. Nobody can check any of it.
+    if (R.interior && R.interior.test(lower)) return false;
+    // Obligation, plan, advice and request. "The place has to be clean" states a
+    // requirement, not a fact, wherever in the sentence the modal sits — so unlike
+    // an opener this is scanned throughout.
+    if (R.modality && R.modality.test(lower)) return false;
+    // Talk about the conversation rather than about the world — but only when that
+    // is all it is. "I said ninety minutes was the ward office figure" reports what
+    // was said AND names a checkable figure, so it stays a claim.
+    if (R.metaTalk && R.metaTalk.test(lower) && !(evidence && evidence.checkable)) return false;
+    return true;
+  }
+
+  /**
+   * Both sentence-level decisions for one sentence, for tooling that needs them
+   * without running a whole analysis. `stop` is the content-word stoplist.
+   */
+  function classifySentence(sent, R, stop) {
+    const lower = sent.toLowerCase();
+    const sTok = tokenize(lower);
+    if (!sTok.length) return { question: '', claim: false };
+    const question = questionKind(sent, sTok, stop, R);
+    return {
+      question,
+      claim: question ? false : isClaimSentence(lower, sTok, R, claimEvidence(sent, lower, sTok, R)),
+    };
+  }
+
   /**
    * Split a chat into episodes at the same six-hour gap that defines "started a
    * conversation". Measuring drift against one global opening is meaningless once
@@ -540,6 +843,57 @@
     return total ? hit / total : 0;
   }
 
+  const ARGUE_MIN_MSGS = 8;         // below this an episode is too short to read either way
+  const ARGUE_CLAIM_RATE = 0.10;    // claims per message
+  const ARGUE_DISPUTE_RATE = 0.10;  // share of messages carrying a disagreement marker
+  const ARGUE_HEATED_RATE = 0.25;   // ...or this much disagreement, when claims are thin
+  const ARGUE_CLAIM_FLOOR = 0.05;   // but never with no assertions at all
+
+  /**
+   * Which conversations in this chat are arguments?
+   *
+   * Rigor is the only lens that scores people, and it is built for a disagreement:
+   * sourcing, answering and topic discipline all presuppose that something is being
+   * contested. Run over three years of flat-hunting and small talk, it reports a
+   * confident zero — every casual remark becomes an unsourced claim and every "Wbu?"
+   * an unanswered question. The applicability check existed but was computed once
+   * for the whole chat, so one real argument inside thirty conversations was averaged
+   * into nothing.
+   *
+   * An episode qualifies when people are both ASSERTING (claims per message) and
+   * DISAGREEING (markers per message). Either alone is not an argument: a stream of
+   * links is not, and neither is a round of swearing.
+   *
+   * @returns {boolean[]} one flag per episode
+   */
+  function argumentativeEpisodes(msgs, episode, episodeCount, bounds, claims, questions) {
+    const claimsIn = new Array(episodeCount).fill(0);
+    for (const c of claims) claimsIn[c.ep]++;
+    const disputeIn = new Array(episodeCount).fill(0);
+    const counted = new Set();
+    for (const q of questions) {
+      // A rhetorical question is a move in an argument; a phatic one is not.
+      if (q.kind === 'rhetorical' && !counted.has(q.i)) { counted.add(q.i); disputeIn[q.ep]++; }
+    }
+    msgs.forEach((m, i) => {
+      if (counted.has(i)) return;
+      const marks = (m.c.absolutist || 0) + (m.c.insult || 0) + (m.c.profanity || 0)
+        + (m.c.political_label || 0) + (m.c.status_hierarchy || 0) + (m.c.evidence || 0)
+        + (m.rhet.evidence_request || 0) + (m.rhet.whataboutism || 0) + (m.rhet.personal_attack || 0)
+        + (m.rhet.unfalsifiable || 0) + (m.rhet.false_dilemma || 0) + (m.rhet.exit_or_concession || 0);
+      if (marks) { counted.add(i); disputeIn[episode[i]]++; }
+    });
+    return bounds.map((b, e) => {
+      const n = b ? b.to - b.from : 0;
+      if (n < ARGUE_MIN_MSGS) return false;
+      const claimRate = claimsIn[e] / n, disputeRate = disputeIn[e] / n;
+      if (claimRate >= ARGUE_CLAIM_RATE && disputeRate >= ARGUE_DISPUTE_RATE) return true;
+      // A heated exchange carried by short retorts rather than assertions is still an
+      // argument. It needs far more disagreement to qualify on that basis alone.
+      return disputeRate >= ARGUE_HEATED_RATE && claimRate >= ARGUE_CLAIM_FLOOR;
+    });
+  }
+
   /**
    * Score argument quality per person. `scored` is the per-message output of analyse().
    * Components that do not apply (nobody asked them anything, they made no claims) are
@@ -547,6 +901,11 @@
    */
   function rigorAnalysis(scored, people, R) {
     const msgs = scored;
+    // Score this chat with the function words and verbs of the languages it is
+    // actually in. `R` is shadowed deliberately: nothing below should reach past
+    // the scoped copy and see another language's words.
+    const languages = detectLanguages(msgs, R.stopwordsBy);
+    R = scopeRigor(R, languages);
     const stop = R.stopwords;
     // Re-tokenise here rather than keeping tokens on every scored message: on a 50k-message
     // chat that array would dominate memory, and this pass is cheap.
@@ -564,6 +923,7 @@
     // One Set per message, built once. The responsiveness and challenge scans below
     // both look up the same messages repeatedly; rebuilding these was the hot path.
     const contentSets = perMsgWords.map(w => new Set(w));
+    const P0 = new Set(people);
     const N = Math.max(msgs.length, 1);
     const idf = t => Math.log(1 + N / (1 + (df[t] || 0)));
     /** Top terms of a slice of messages, by TF-IDF against the whole chat. */
@@ -602,7 +962,42 @@
     // "The opening topic" in the UI means what the chat started as: episode one.
     const topic = epTopic.length ? epTopic[0].terms : [];
 
-    /* --- per person accumulators --- */
+    /* --- pass 1: every sentence, tagged with the episode it belongs to --- */
+    const allClaims = [];
+    const allQuestions = [];
+    msgs.forEach((m, i) => {
+      if (!P0.has(m.who)) return;
+      for (const sent of splitSentences(m.text)) {
+        const lower = sent.toLowerCase();
+        const sTok = tokenize(lower);
+        if (!sTok.length) continue;
+        const kind = questionKind(sent, sTok, stop, R);
+        if (kind) {
+          // All three kinds are kept, so the UI can say how many were small talk.
+          // Only a substantive question is a debt somebody owes an answer to.
+          allQuestions.push({ who: m.who, i, ep: episode[i], date: m.date, text: sent, kind, kw: new Set(contentWords(sTok, stop)), answered: false });
+          continue;
+        }
+        const evidence = claimEvidence(sent, lower, sTok, R);
+        if (!isClaimSentence(lower, sTok, R, evidence)) continue;
+        allClaims.push({ who: m.who, i, ep: episode[i], date: m.date, text: sent, kw: new Set(contentWords(sTok, stop)), challenged: false, challengedAt: -1, answered: false, ...evidence });
+      }
+    });
+
+    /* --- which conversations are actually arguments? --- */
+    const argues = argumentativeEpisodes(msgs, episode, episodeCount, bounds, allClaims, allQuestions);
+    const scoredEpisodes = [];
+    for (let e = 0; e < episodeCount; e++) if (argues[e]) scoredEpisodes.push(e);
+    // A chat with no argument in it has nothing for this lens to weigh. Scoring it
+    // anyway is what produced a confident ledger of flat-hunting and a list of
+    // "unanswered questions" that were mostly "Wbu?".
+    const applies = scoredEpisodes.length > 0;
+    // No fallback to "score everything anyway". A chat with no argument in it gets an
+    // empty ledger and an empty question list, so a caller that ignores `applies`
+    // still cannot print a confident analysis of a conversation that never happened.
+    const inScope = i => argues[episode[i]];
+
+    /* --- per person accumulators, over the argument only --- */
     const P = {};
     for (const p of people) P[p] = {
       claims: [], questionsAsked: 0, answered: 0, putToThem: 0,
@@ -612,12 +1007,9 @@
       msgs: 0, hostileMsgs: 0, hedgeMsgs: 0, concessionMsgs: 0, absolutistMsgs: 0,
     };
 
-    /* --- sentences: claims and questions --- */
-    const ledger = [];
-    const questions = [];
     msgs.forEach((m, i) => {
       const p = P[m.who];
-      if (!p) return;
+      if (!p || !inScope(i)) return;
       p.drifts.push(drift[i]);
       p.words += m.words;
       p.msgs++;
@@ -633,33 +1025,23 @@
       p.concession += conc;
       if (conc) p.concessionMsgs++;
       p.selfCorrection += countList(R.selfCorrection, toks[i], lowerMsg);
-
-      for (const sent of splitSentences(m.text)) {
-        const lower = sent.toLowerCase();
-        const sTok = tokenize(lower);
-        if (!sTok.length) continue;
-        if (sent.indexOf('?') >= 0) {
-          const kw = contentWords(sTok, stop);
-          if (kw.length) { questions.push({ who: m.who, i, date: m.date, text: sent, kw: new Set(kw), answered: false }); p.questionsAsked++; }
-          continue;
-        }
-        if (sTok.length < RIGOR_MIN_CLAIM_WORDS) continue;
-        if (!sTok.some(t => R.factualVerb.has(t))) continue;
-        // An opinion, an offer, a plan or a request is not a checkable claim.
-        // Counting them inflates the Sourcing denominator and makes a careful
-        // speaker look vague, so they are skipped rather than scored.
-        let skip = false;
-        for (const o of R.opinionOpener) { const at = lower.indexOf(o); if (at >= 0 && at < 30) { skip = true; break; } }
-        if (!skip) for (const o of R.intentOpener) { const at = lower.indexOf(o); if (at >= 0 && at < 30) { skip = true; break; } }
-        if (skip) continue;
-        const claim = { who: m.who, i, date: m.date, text: sent, kw: new Set(contentWords(sTok, stop)), challenged: false, challengedAt: -1, answered: false, ...claimEvidence(sent, lower, sTok, R) };
-        p.claims.push(claim);
-        ledger.push(claim);
-      }
     });
+
+    const ledger = [];
+    for (const c of allClaims) {
+      if (!inScope(c.i)) continue;
+      P[c.who].claims.push(c);
+      ledger.push(c);
+    }
+    const questions = allQuestions.filter(q => inScope(q.i));
+    for (const q of questions) if (q.kind === 'substantive') P[q.who].questionsAsked++;
 
     /* --- responsiveness: did the other person engage with the question? --- */
     for (const q of questions) {
+      // Nobody owes an answer to "Wbu?" or to a whataboutism. Scoring them as debts
+      // made a friendly chat look evasive, which was most of what Responsiveness
+      // was measuring before.
+      if (q.kind !== 'substantive') continue;
       for (const name of people) if (name !== q.who) P[name].putToThem++;
       for (let j = q.i + 1; j <= Math.min(msgs.length - 1, q.i + RIGOR_ANSWER_WINDOW); j++) {
         const m = msgs[j];
@@ -673,11 +1055,15 @@
     }
 
     /* --- was a claim challenged, and did its author then back it up? --- */
+    // A back-channel "really?" after a claim is not a challenge to it. Only a real
+    // question, or an explicit ask for evidence, puts a claim under pressure.
+    const asked = new Set();
+    for (const q of questions) if (q.kind !== 'phatic') asked.add(q.i);
     for (const c of ledger) {
       for (let j = c.i + 1; j <= Math.min(msgs.length - 1, c.i + RIGOR_ANSWER_WINDOW); j++) {
         const m = msgs[j];
         if (m.who === c.who) continue;
-        const isChallenge = (m.rhet.evidence_request || 0) > 0 || m.text.indexOf('?') >= 0;
+        const isChallenge = (m.rhet.evidence_request || 0) > 0 || asked.has(j);
         if (isChallenge && overlapCount(c.kw, contentSets[j]) >= RIGOR_OVERLAP) { c.challenged = true; c.challengedAt = j; break; }
       }
       if (!c.challenged) continue;
@@ -751,8 +1137,14 @@
 
     // How much of an argument is this, really? Sourcing and Answering are only
     // meaningful where there are claims and questions to score. Measured, not guessed.
+    // Measured against the messages it actually scored, not against the whole chat:
+    // otherwise a dense argument inside a long friendly chat reads as inapplicable
+    // purely because of everything around it.
     const totalClaims = ledger.length;
-    const claimsPerMessage = msgs.length ? totalClaims / msgs.length : 0;
+    const scoredMsgs = applies
+      ? scoredEpisodes.reduce((n, e) => n + (bounds[e].to - bounds[e].from), 0)
+      : msgs.length;
+    const claimsPerMessage = scoredMsgs ? totalClaims / scoredMsgs : 0;
     const fit = clamp01(claimsPerMessage / RIGOR_FIT_FULL);
 
     return {
@@ -760,18 +1152,32 @@
       weights: RIGOR_WEIGHTS,
       applicability: {
         claims: totalClaims,
-        messages: msgs.length,
+        messages: scoredMsgs,
         claimsPerMessage,
         fit,
         weak: fit < RIGOR_FIT_WEAK,
       },
+      languages,
+      // What this lens actually looked at. `applies` false means the chat holds no
+      // argument to score, and the caller should say so rather than print a ledger.
+      applies,
+      episodesScored: scoredEpisodes.length,
+      episodeArgues: argues,
+      scoredRange: scoredEpisodes.length
+        ? { from: msgs[bounds[scoredEpisodes[0]].from].date, to: msgs[bounds[scoredEpisodes[scoredEpisodes.length - 1]].to - 1].date }
+        : null,
+      scoredMessages: scoredMsgs,
       episodes: episodeCount,
       episodeTopics: epTopic.slice(0, 12).map(t => t.terms.slice(0, 6).map(x => x.t)),
       topicTerms: topic.map(x => x.t),
       ledgerTotal: ledger.length,
       ledger: ledger.slice(0, LEDGER_MAX).map(c => ({ who: c.who, date: c.date, text: c.text.slice(0, 240), status: c.status, checkable: c.checkable, challenged: c.challenged, answered: c.answered })),
-      unansweredTotal: questions.reduce((n, q) => n + (q.answered ? 0 : 1), 0),
-      unanswered: questions.filter(q => !q.answered).slice(0, UNANSWERED_MAX).map(q => ({ who: q.who, date: q.date, text: q.text.slice(0, 240) })),
+      // Over the whole chat, not just the part that was scored: "most of what looked
+      // like unanswered questions was small talk" is worth being able to say.
+      questionMix: allQuestions.reduce((c, q) => (c[q.kind] = (c[q.kind] || 0) + 1, c), { phatic: 0, rhetorical: 0, substantive: 0 }),
+      unansweredTotal: questions.reduce((n, q) => n + (q.kind === 'substantive' && !q.answered ? 1 : 0), 0),
+      unanswered: questions.filter(q => q.kind === 'substantive' && !q.answered).slice(0, UNANSWERED_MAX)
+        .map(q => ({ who: q.who, date: q.date, text: q.text.slice(0, 240) })),
       drift: downsample(msgs.map((m, i) => ({ who: m.who, date: m.date, drift: drift[i] })), DRIFT_POINTS),
     };
   }
@@ -790,34 +1196,37 @@
     share: { label: 'Share of messages', fmt: 'pct', lenses: ['overview', 'personal', 'work'] },
     wordsPerMsg: { label: 'Words per message', fmt: 'num1', lenses: ['overview', 'debate', 'rigor'] },
     questionRate: { label: 'Messages that ask a question', fmt: 'pct', lenses: ['overview', 'debate', 'personal', 'work', 'rigor'] },
-    absolutist: { label: 'Absolutist words', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'always, never, every, nothing, simple…' },
-    hedge: { label: 'Hedging words', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'maybe, I think, probably…' },
-    evidence: { label: 'Evidence words', fmt: 'rate', lenses: ['debate', 'work', 'rigor'], note: 'source, proof, court, data…' },
-    self: { label: '“I / me / my”', fmt: 'rate', lenses: ['debate', 'personal'] },
-    other: { label: '“You / your”', fmt: 'rate', lenses: ['debate', 'personal'] },
-    we: { label: '“We / us”', fmt: 'rate', lenses: ['personal', 'work'] },
-    politicalLabel: { label: 'Group labels', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'bhakt, libtard, anti-national…' },
-    status: { label: 'Status / age put-downs', fmt: 'rate', lenses: ['debate', 'rigor'], note: 'kid, chote, grow up…' },
-    profanity: { label: 'Profanity', fmt: 'rate', lenses: ['overview', 'debate'] },
-    insult: { label: 'Insults', fmt: 'rate', lenses: ['debate', 'personal', 'rigor'] },
+    absolutist: { label: 'Absolutist words', fmt: 'rate', count: 'absolutist', lenses: ['debate', 'rigor'], note: 'always, never, every, nothing, simple…' },
+    hedge: { label: 'Hedging words', fmt: 'rate', count: 'hedge', lenses: ['debate', 'rigor'], note: 'maybe, I think, probably…' },
+    evidence: { label: 'Evidence words', fmt: 'rate', count: 'evidence', lenses: ['debate', 'work', 'rigor'], note: 'source, proof, court, data…' },
+    self: { label: '“I / me / my”', fmt: 'rate', count: 'self', lenses: ['debate', 'personal'] },
+    other: { label: '“You / your”', fmt: 'rate', count: 'other', lenses: ['debate', 'personal'] },
+    we: { label: '“We / us”', fmt: 'rate', count: 'we', lenses: ['personal', 'work'] },
+    politicalLabel: { label: 'Group labels', fmt: 'rate', count: 'political_label', lenses: ['debate', 'rigor'], note: 'bhakt, libtard, anti-national…' },
+    status: { label: 'Status / age put-downs', fmt: 'rate', count: 'status_hierarchy', lenses: ['debate', 'rigor'], note: 'kid, chote, grow up…' },
+    profanity: { label: 'Profanity', fmt: 'rate', count: 'profanity', lenses: ['overview', 'debate'] },
+    insult: { label: 'Insults', fmt: 'rate', count: 'insult', lenses: ['debate', 'personal', 'rigor'] },
     laugh: { label: 'Laughing emoji / lol', fmt: 'int', lenses: ['overview', 'debate'] },
     mock: { label: 'Mocking emoji / phrases', fmt: 'int', lenses: ['debate'] },
     heatMean: { label: 'Heat (hostility heuristic)', fmt: 'num2', lenses: ['overview', 'debate', 'personal'] },
     sentiment: { label: 'Average tone (VADER)', fmt: 'signed2', lenses: ['overview', 'personal'] },
-    affection: { label: 'Affection words', fmt: 'rate', lenses: ['personal'] },
-    apology: { label: 'Apologies', fmt: 'rate', lenses: ['personal', 'work'] },
-    politeness: { label: 'Please / thanks', fmt: 'rate', lenses: ['work', 'personal'] },
-    action: { label: 'Action words', fmt: 'rate', lenses: ['work'] },
-    urgency: { label: 'Urgency words', fmt: 'rate', lenses: ['work'] },
-    initiations: { label: 'Conversations started', fmt: 'int', lenses: ['overview', 'personal', 'work'], note: 'first message after a 6h gap' },
-    replyMedianMin: { label: 'Median reply time', fmt: 'mins', lenses: ['overview', 'personal', 'work'] },
-    afterHours: { label: 'Sent before 9am / after 9pm', fmt: 'pct', lenses: ['work', 'personal'] },
+    affection: { label: 'Affection words', fmt: 'rate', count: 'affection', lenses: ['personal'] },
+    apology: { label: 'Apologies', fmt: 'rate', count: 'apology', lenses: ['personal', 'work'] },
+    politeness: { label: 'Please / thanks', fmt: 'rate', count: 'politeness', lenses: ['work', 'personal'] },
+    action: { label: 'Action words', fmt: 'rate', count: 'action', lenses: ['work'] },
+    urgency: { label: 'Urgency words', fmt: 'rate', count: 'urgency', lenses: ['work'] },
+    // needsTime: derived from the clock, so meaningless on a transcript that carries
+    // no timestamps. Callers drop these when res.undated is set.
+    initiations: { label: 'Conversations started', fmt: 'int', lenses: ['overview', 'personal', 'work'], note: 'first message after a 6h gap', needsTime: true },
+    replyMedianMin: { label: 'Median reply time', fmt: 'mins', lenses: ['overview', 'personal', 'work'], needsTime: true },
+    afterHours: { label: 'Sent before 9am / after 9pm', fmt: 'pct', lenses: ['work', 'personal'], needsTime: true },
   };
 
   const MORAL_LABELS = { care: 'Care / harm', fairness: 'Fairness / justice', loyalty: 'Loyalty / nation', authority: 'Authority / respect', purity: 'Purity / disgust' };
   const RHET_LABELS = {
     whataboutism: 'Whataboutism', false_dilemma: 'False choice', exit_or_concession: 'Exit or concession',
     unfalsifiable: 'Unfalsifiable certainty', evidence_request: 'Asks for evidence', personal_attack: 'Personal attack',
+    caveat: 'Qualifies a claim',
   };
 
   function ratio(a, b) { return b > 0 ? a / b : a > 0 ? Infinity : 1; }
@@ -1019,5 +1428,6 @@
     parseChat, createAnalyzer, findings, toMarkdown, fmt, fmtMins, fmtDate,
     LENSES, METRICS, MORAL_LABELS, RHET_LABELS, MIN_WORDS_FOR_CLAIM,
     RIGOR_WEIGHTS, RIGOR_LABELS, RIGOR_HOW, RIGOR_ANSWER_WINDOW, splitSentences,
+    classifySentence, compileRigor, detectLanguages, stopSetFor, scopeRigor, unpackVader,
   };
 });
