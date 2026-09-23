@@ -6,7 +6,7 @@
     threadlens
   </a>
   <nav class="nav" aria-label="Page">
-    <a href="#lenses">What it shows</a>
+    <a href="#lenses">What it asks</a>
     <a href="#faq">How it works</a>
     <a href="#privacy">Privacy</a>
     <a href="https://github.com/kaustav1311/threadlens" rel="noopener">Source</a>
@@ -14,6 +14,7 @@
 </header>
 
 <main>
+  <!--BUILD:LOCAL-BANNER-->
   <section class="wrap hero" aria-labelledby="h1">
     <div class="hero-copy">
       <p class="eyebrow">The compatibility test for people who argue</p>
@@ -58,7 +59,7 @@
         </div>
         <div class="opts">
           <label>This chat is with
-            <select id="relation" title="Sets which lens opens first and which findings are worth surfacing. It never changes how anything is scored.">
+            <select id="relation" title="Reorders the report so the part most likely to matter comes first. It never changes how anything is scored.">
               <option value="">Not saying</option>
               <option value="partner">A partner</option>
               <option value="family">Family</option>
@@ -85,16 +86,11 @@
     <li><span class="ic" aria-hidden="true">05</span><span><b>Open lists, open models.</b> MIT, every word list readable and editable in one file. Run it deeper offline and it uses open models &mdash; toxicity, fallacy and contradiction &mdash; or your own local ones.</span></li>
   </ul>
 
+  <!-- One report, not five. This nav is built from the sections that actually
+       rendered, so it never offers a view of something the chat does not support. -->
   <div class="lensbar" id="lensbar">
     <div class="wrap">
-      <div class="seg" role="group" aria-label="Choose a lens" id="seg">
-        <span class="pill-slide" aria-hidden="true" id="pill"></span>
-        <button type="button" data-lens="overview" aria-pressed="false">Overview</button>
-        <button type="button" data-lens="debate" aria-pressed="true">Debate</button>
-        <button type="button" data-lens="rigor" aria-pressed="false">Rigor</button>
-        <button type="button" data-lens="personal" aria-pressed="false">Personal</button>
-        <button type="button" data-lens="work" aria-pressed="false">Work</button>
-      </div>
+      <nav class="seg" aria-label="Jump to a section" id="seg"></nav>
       <p class="lens-blurb" id="lens-blurb"></p>
     </div>
   </div>
@@ -103,28 +99,33 @@
   <div class="toastbox" id="toastbox" aria-live="polite" aria-atomic="false"></div>
 
   <section class="wrap section" id="lenses" aria-labelledby="lenses-h">
-    <h2 id="lenses-h">Five lenses, five questions</h2>
-    <p class="lede-sm">Same chat, same numbers. Each lens just asks a different thing of them.</p>
+    <h2 id="lenses-h">Six questions, one report</h2>
+    <p class="lede-sm">One page, read top to bottom. Every section is the same numbers counted the same way for
+      each of you &mdash; and a section that this chat cannot answer does not appear at all.</p>
     <div class="faq">
       <details open>
-        <summary>Overview &mdash; who talked, and when?</summary>
-        <p>Share of messages, words per message, who starts conversations after a six-hour gap, median reply time, and what hours you both keep. The baseline everything else sits on.</p>
+        <summary>Who actually started it?</summary>
+        <p>Your chat is split into conversations at six-hour gaps, and each one has a person who opened it. Alongside that: share of messages, words per message, median reply time and the hours you each keep. The baseline everything else sits on.</p>
       </details>
       <details>
-        <summary>Debate &mdash; how was the argument conducted?</summary>
-        <p>Questions versus assertions, absolutist words (<span class="mono">always, never, everyone</span>), evidence words, group labels, status put-downs, and a 0&ndash;1 heat trend. Plus moral vocabulary &mdash; whether one of you argues from fairness and the other from loyalty, which is usually why you are talking past each other.</p>
+        <summary>Do you even speak the same language?</summary>
+        <p>Literally. It works out whether a chat is English, romanised Bengali, romanised Hindi or a mix, and treats each one's function words as function words. Then it compares how much of each other's vocabulary you actually pick up &mdash; and how often one of you answers in a register the other never uses.</p>
       </details>
       <details>
-        <summary>Rigor &mdash; who actually argued well?</summary>
-        <p>A score out of 100 for each person built from sourcing, answering the other's questions, staying on topic, conduct, hedging, and owning a mistake. It comes with a ledger of every factual claim and whether it cited anything. It says nothing about who is right, and it is built so that it <em>cannot</em>.</p>
+        <summary>Which of you brings receipts?</summary>
+        <p>Every factual-sounding sentence goes in a ledger with whether it pointed at anything checkable: a link, a named report, a date, a number. Threadlens never marks a claim true or false. It tells you which ones are worth going and checking.</p>
       </details>
       <details>
-        <summary>Personal &mdash; who is carrying this?</summary>
-        <p>Who reaches out first, who replies faster, affection and apology words, and how the tone moved over time. Useful when the honest question is whether one of you has quietly stopped trying.</p>
+        <summary>Who actually answers the question?</summary>
+        <p>Questions come in three kinds and only one is a debt. A check-in like <span class="mono">Wbu?</span> wants acknowledgement; a whataboutism wants a point scored; a real question wants an answer. Only the last kind can go unanswered, which is why this number is finally believable.</p>
       </details>
       <details>
-        <summary>Work &mdash; is this thread functioning?</summary>
-        <p>Responsiveness, action words, urgency words, politeness, and after-hours load. Handy evidence when someone insists they are &ldquo;always available&rdquo;.</p>
+        <summary>Whose temper turns up first?</summary>
+        <p>A 0&ndash;1 heat trend per person over time, absolutist words, group labels, status put-downs and profanity &mdash; plus moral vocabulary, which is often why you are talking past each other: one of you is arguing from fairness and the other from loyalty.</p>
+      </details>
+      <details>
+        <summary>Are you even arguing about the same thing?</summary>
+        <p>Drift from what each conversation opened on, and the moments someone changed the subject right after being challenged. This section only appears when your chat actually contains an argument &mdash; on three years of small talk it says so instead of scoring one.</p>
       </details>
     </div>
   </section>
@@ -175,7 +176,7 @@
     <div class="faq">
       <details open>
         <summary>How can I be sure?</summary>
-        <p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser refuses to let it open a network connection at all &mdash; even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off; it behaves identically. There is no server, no account, no cookie and no analytics, and a test in the repo fails the build if anyone adds one.</p>
+        <!--BUILD:NETWORK-CLAIM--><p>This page ships a Content-Security-Policy of <span class="mono">connect-src 'none'</span>, so the browser refuses to let it open a network connection at all &mdash; even if the code tried. Open your network tab and watch nothing happen. Or save the page and run it with the Wi-Fi off; it behaves identically. There is no server, no account, no cookie and no analytics, and a test in the repo fails the build if anyone adds one.</p>
       </details>
       <details>
         <summary>Should I be analysing someone else's messages?</summary>

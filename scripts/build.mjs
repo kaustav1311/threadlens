@@ -59,6 +59,8 @@ function packVader(p) {
   return JSON.stringify(keys.map(k => k + ' ' + Math.round(v[k] * 10)).join(VADER_SEP));
 }
 
+const publicBody = body.replace(/<!--BUILD:[A-Z-]+-->/g, '');
+
 const scripts = env => [
   r('web/vendor/jszip.min.js'),
   `window.TL_ENV=${JSON.stringify(env)};`
@@ -106,7 +108,7 @@ mkdirSync(join(root, 'dist'), { recursive: true });
 <style>${css}</style>
 </head>
 <body>
-${body}
+${publicBody}
 ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 </body>
 </html>
@@ -114,12 +116,74 @@ ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
   writeFileSync(join(root, 'dist/index.html'), html);
 }
 
+/* ---------------------------------------------------------- local-model build
+ * A SEPARATE page that is allowed to talk to a model running on your own machine,
+ * and nothing else. It exists because the sealed page cannot do the one judgement
+ * a word list cannot make — assertion versus strongly-worded opinion — and some
+ * people would rather run a model than accept that limit.
+ *
+ * It is deliberately a different file with a different name:
+ *   - dist/index.html keeps `connect-src 'none'` and is the only thing deployed.
+ *   - .github/workflows/pages.yml publishes index.html, never this.
+ *   - .gitignore excludes it, so it cannot be committed by accident.
+ *   - build.test.js asserts the sealed page never gains a connect-src.
+ * The privacy copy changes in the same build, because a page that can reach the
+ * network must not carry a page's claim that it cannot.
+ */
+const LOCAL_ORIGIN = 'http://127.0.0.1:11434';
+const LOCAL_BANNER = `<div class="wrap local-banner" role="note">`
+  + `<b>Local-model build.</b> This copy of the page is allowed to talk to a model running on this machine `
+  + `at <span class="mono">${LOCAL_ORIGIN}</span>, and to nothing else. It is not the version published at `
+  + `the public address, which cannot open a network connection at all. Do not host this file anywhere.`
+  + `</div>`;
+const LOCAL_CLAIM = `<p>Not this build. The published page ships a Content-Security-Policy of `
+  + `<span class="mono">connect-src 'none'</span> and cannot open a connection at all — but you are reading `
+  + `the <b>local-model build</b>, whose policy allows exactly one destination: `
+  + `<span class="mono">${LOCAL_ORIGIN}</span>, an ollama server on this machine. Everything else is still `
+  + `refused, nothing is uploaded, and the analysis still happens in this tab. If you want the sealed `
+  + `guarantee, use <span class="mono">dist/index.html</span> instead.</p>`;
+
+{
+  // Markers must exist, or the local build would silently ship the sealed page's
+  // privacy claim while being able to reach the network.
+  for (const marker of ['<!--BUILD:LOCAL-BANNER-->', '<!--BUILD:NETWORK-CLAIM-->']) {
+    if (!body.includes(marker)) throw new Error(`web/src/body.html is missing ${marker}`);
+  }
+  const localBody = body
+    .replace('<!--BUILD:LOCAL-BANNER-->', LOCAL_BANNER)
+    .replace(/<!--BUILD:NETWORK-CLAIM-->\s*<p>[\s\S]*?<\/p>/, LOCAL_CLAIM);
+  const s = scripts('local');
+  const hashes = s.map(js => `'sha256-${createHash('sha256').update(js, 'utf8').digest('base64')}'`).join(' ');
+  const csp = `default-src 'none'; script-src ${hashes}; style-src 'unsafe-inline'; img-src data: blob:; connect-src ${LOCAL_ORIGIN}; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; worker-src blob:`;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>${title} — local-model build</title>
+<style>${css}
+.local-banner { border: var(--rule) solid var(--warn); background: var(--warn-soft); color: var(--ink); padding: var(--pad); margin-block: var(--space-5); font-size: var(--text-sm); }
+</style>
+</head>
+<body>
+${localBody}
+${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
+</body>
+</html>
+`;
+  writeFileSync(join(root, 'dist/index-local.html'), html);
+}
+
 // Fragment for artifact-style hosts
 {
   const s = scripts('artifact');
   const html = `<title>${title}</title>
 <style>${css}</style>
-${body}
+${publicBody}
 ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 `;
   writeFileSync(join(root, 'dist/threadlens-artifact.html'), html);
@@ -134,7 +198,7 @@ ${s.map((js, i) => `${tagFor(i)}${js}</script>`).join('\n')}
 // packed above) or code (it probably needs deleting).
 const BUDGET_KB = 600;
 const kb = statSync(join(root, 'dist/index.html')).size / 1024;
-console.log(`built dist/index.html (${kb.toFixed(0)} KB) and dist/threadlens-artifact.html`);
+console.log(`built dist/index.html (${kb.toFixed(0)} KB), dist/threadlens-artifact.html and dist/index-local.html`);
 if (kb > BUDGET_KB) {
   console.error(`dist/index.html is ${kb.toFixed(0)} KB, over the ${BUDGET_KB} KB budget.`);
   process.exit(1);

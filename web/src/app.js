@@ -39,17 +39,10 @@
   const dateTime = d => new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   const state = {
-    raw: null, source: '', isSample: false, lens: 'debate', res: null, busy: false,
+    raw: null, source: '', isSample: false, res: null, busy: false,
     clip: null,          // {from,to} ISO dates, applied at parse time
     fullRange: null,     // the unclipped span, so the clip UI knows its bounds
-    lensPinned: false,   // true once the user picks a lens themselves
-  };
-
-  /* Which lens opens first, given what the user says this chat is. It changes
-     what is surfaced, never how anything is scored. */
-  const LENS_FOR_RELATION = {
-    partner: 'personal', family: 'personal', friend: 'overview',
-    colleague: 'work', group: 'overview', stranger: 'rigor',
+    totals: false,       // measures shown as raw counts rather than per-100-word rates
   };
 
   /* --------------------------------------------------------------- input */
@@ -247,9 +240,6 @@
       }
       state.res = res;
       if (!state.clip) state.fullRange = { from: res.range.from, to: res.range.to };
-      // Honour what the user said this chat is, until they pick a lens themselves.
-      const rel = $('#relation').value;
-      if (!state.lensPinned && LENS_FOR_RELATION[rel]) state.lens = LENS_FOR_RELATION[rel];
       setProgress(null);
       render();
       if (!isSample) {
@@ -293,13 +283,6 @@
 
   /* --------------------------------------------------------------- render */
 
-  function movePill() {
-    const active = $('.seg button[aria-pressed="true"]'), pill = $('#pill');
-    if (!active || !pill) return;
-    pill.style.width = active.offsetWidth + 'px';
-    pill.style.transform = `translateX(${active.offsetLeft}px)`;
-  }
-
   /** Count a number up on first paint. Short, once, skipped entirely for reduced motion. */
   function countUp(node, to, fmt) {
     const final = fmt(to);
@@ -315,21 +298,74 @@
     requestAnimationFrame(step);
   }
 
+  /* ------------------------------------------------------------- one report
+   * There used to be five lenses showing the same containers with different
+   * metric subsets, which meant reading the same chat five times to find the one
+   * view that applied to it. There is now one page, and each section appears only
+   * when the chat actually supports it: no timestamps means no timeline, no
+   * argument means no rigor section. The relationship selector reorders and
+   * opens sections. It still never touches a score.
+   */
+  const SECTION_FOR_RELATION = {
+    partner: 'tone', family: 'tone', friend: 'timeline',
+    colleague: 'timeline', group: 'timeline', stranger: 'rigor',
+  };
+
+  const SECTION_LABELS = {
+    summary: 'Summary', measures: 'Differences', timeline: 'Over time',
+    tone: 'Conduct', rigor: 'The argument',
+  };
+
+  /** A section of the report, carrying the anchor the nav and deep links use. */
+  function section(id, title, ...kids) {
+    return el('section', { class: 'report-section', id: 'sec-' + id, 'data-section': id },
+      el('h2', { class: 'section-h' }, title), ...kids.filter(Boolean));
+  }
+
+  /** Findings across every lens, deduplicated: one chat, one list. */
+  function allFindings(res) {
+    const seen = new Set(), out = [];
+    for (const lens of Object.keys(core.LENSES)) {
+      if (lens === 'rigor' && !res.rigor.applies) continue;
+      for (const f of core.findings(res, lens)) {
+        const key = f.short || f.text;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(f);
+      }
+    }
+    // Caveats last: they are context for the findings above them, not headlines.
+    return out.filter(f => f.kind !== 'caveat').concat(out.filter(f => f.kind === 'caveat'));
+  }
+
+  function buildSectionNav(ids) {
+    const nav = $('#seg');
+    nav.replaceChildren();
+    for (const id of ids) {
+      nav.append(el('a', {
+        href: '#sec-' + id,
+        onclick: e => {
+          e.preventDefault();
+          const t = $('#sec-' + id);
+          if (t) t.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+        },
+      }, SECTION_LABELS[id]));
+    }
+  }
+
   function render() {
-    const { res, lens } = state;
+    const { res } = state;
     const R = $('#results');
     R.replaceChildren();
     // keep `wrap` -- it carries the page gutter and max width
-    R.className = 'wrap results swap' + (lens === 'rigor' ? ' lens-rigor' : '');
+    R.className = 'wrap results swap';
     void R.offsetWidth;
-    $('#lens-blurb').textContent = core.LENSES[lens].blurb;
-    document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lens === lens)));
-    $('#lensbar').classList.toggle('lens-rigor', lens === 'rigor');
-    movePill();
-    if (!res) return;
+    if (!res) { $('#seg').replaceChildren(); $('#lens-blurb').textContent = ''; return; }
 
     const idx = Object.fromEntries(res.people.map((p, i) => [p, i]));
     const days = res.range.days;
+    const G = res.rigor;
+    const rel = $('#relation').value;
 
     /* Sample or yours: said once, plainly, above every number. */
     R.append(state.isSample
@@ -344,11 +380,11 @@
         el('b', null, 'Your chat'),
         el('span', null, `Read inside this tab and never uploaded. ${res.totals.messages.toLocaleString()} messages scored locally.`)));
 
-    const rel = $('#relation').value;
     R.append(el('p', { class: 'statusline' },
-      `> threadlens --lens ${lens} --source ${state.isSample ? 'sample' : 'local'}`
+      `> threadlens --source ${state.isSample ? 'sample' : 'local'}`
       + (rel ? ` --with ${rel}` : '')
       + (state.clip ? ' --clip' : '')
+      + (res.undated ? ' --no-dates' : '')
       + ` --messages ${res.totals.messages}`,
       el('span', { class: 'caret', 'aria-hidden': 'true' })));
 
@@ -358,7 +394,7 @@
     R.append(el('div', { class: 'banner' },
       el('div', { class: 'hrow' },
         el('h2', null, state.isSample ? 'A disagreement about a car-free market' : state.source || 'Your conversation'),
-        el('span', { class: 'tag ' + (lens === 'rigor' ? 'rigor' : 'compare') }, core.LENSES[lens].badge || core.LENSES[lens].title + ' lens')),
+        el('span', { class: 'tag compare' }, 'Same ruler, both sides')),
       el('div', { class: 'facts' },
         el('span', null, `${res.totals.messages.toLocaleString()} messages`),
         el('span', null, `${res.totals.words.toLocaleString()} words`),
@@ -369,71 +405,83 @@
           ? el('span', null, 'no timestamps — order only')
           : el('span', null, `${core.fmtDate(res.range.from)} → ${core.fmtDate(res.range.to)}`),
         res.undated ? null : el('span', null, `${days} active day${days === 1 ? '' : 's'}`),
-        res.undated ? null : el('span', null, `dates ${res.dateOrder}`))));
+        (G.languages && G.languages.length > 1)
+          ? el('span', null, `languages ${G.languages.join(' + ')}`)
+          : null)));
 
-    // A Rigor scorecard for a chat with no argument in it is a number about nothing.
-    const scoreless = lens === 'rigor' && !res.rigor.applies;
-    if (!scoreless) R.append(lens === 'rigor' ? rigorCards(res, idx) : scoreCards(res, idx, lens));
-    R.append(findingCards(res, lens));
+    /* ---------------------------------------------------------- sections */
+    const made = [];
+    const add = (id, node) => { made.push(id); R.append(node); };
 
-    if (lens === 'rigor' && !res.rigor.applies) {
-      // Nothing in this chat is an argument. Printing a ledger and a drift chart
-      // anyway is how the lens used to produce a confident analysis of small talk.
-      R.append(el('div', { class: 'knowhow' },
-        el('h4', null, 'There is no argument here to score'),
-        el('p', null, `All ${res.rigor.episodes} conversation${res.rigor.episodes === 1 ? '' : 's'} in this chat read as `
-          + 'small talk, logistics or agreement — nobody is contesting anything at length. Rigor measures how a '
-          + 'disagreement was conducted: sourcing, answering, staying on topic. With no disagreement to measure, '
-          + 'every one of those would be a confident zero about nothing.'),
-        el('p', null, 'The other lenses do apply. Overview and Personal are the ones worth reading for a chat like this.')));
-    } else if (lens === 'rigor') {
-      R.append(rigorKnowhow(res));
-      R.append(claimLedger(res, idx));
-      const g = el('div', { class: 'grid2' });
-      g.append(unansweredPanel(res, idx), driftPanel(res, idx));
-      R.append(g);
+    add('summary', section('summary', 'The short version',
+      scoreCards(res, idx, 'overview'),
+      findingCards(res, allFindings(res))));
+
+    add('measures', section('measures', 'Where you differ most',
+      measuresDrawer(res, idx)));
+
+    if (!res.undated) {
+      const grid = el('div', { class: 'grid2' });
+      grid.append(chartPanel(res, idx, 'n'), chartPanel(res, idx, 'heat'));
+      add('timeline', section('timeline', 'Over time', grid, chartPanel(res, idx, 'hours')));
     } else {
-      // Every chart here has time on its x-axis. On a transcript with no timestamps
-      // they would plot a timeline this page invented, so they are left out entirely
-      // rather than drawn against a fiction.
-      if (!res.undated) {
-        const grid = el('div', { class: 'grid2' });
-        grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'heat' : 'n'));
-        grid.append(chartPanel(res, idx, lens === 'debate' || lens === 'personal' ? 'n' : lens === 'work' ? 'hours' : 'heat'));
-        R.append(grid);
-      }
-      if (lens === 'debate') {
-        const g2 = el('div', { class: 'grid2' });
-        g2.append(moralPanel(res, idx), rhetoricPanel(res, idx));
-        R.append(g2);
-      }
-    }
-    if (res.undated) {
-      R.append(el('p', { class: 'muted' },
+      R.append(el('p', { class: 'muted undated-note' },
         'This was pasted without timestamps, so it is read in order only. '
         + 'Reply times, conversation starts, time of day and the daily charts are all left out — '
         + 'export the chat instead of copying the messages if you want those.'));
     }
 
-    R.append(measuresDrawer(res, lens, idx));
-    if ((lens === 'debate' || lens === 'overview') && $('#showq').checked && res.hottest.length) R.append(hottestPanel(res, idx));
+    const toneBits = el('div');
+    const g3 = el('div', { class: 'grid2' });
+    g3.append(moralPanel(res, idx), rhetoricPanel(res, idx));
+    toneBits.append(g3);
+    if ($('#showq').checked && res.hottest.length) toneBits.append(hottestPanel(res, idx));
+    add('tone', section('tone', 'Conduct and tone', toneBits));
+
+    if (G.applies) {
+      const g4 = el('div', { class: 'grid2' });
+      g4.append(unansweredPanel(res, idx), driftPanel(res, idx));
+      add('rigor', section('rigor', 'How the argument was argued',
+        rigorCards(res, idx), rigorKnowhow(res), claimLedger(res, idx), g4));
+    } else {
+      // Nothing in this chat is an argument. Printing a ledger and a drift chart
+      // anyway is how this used to produce a confident analysis of small talk.
+      add('rigor', section('rigor', 'How the argument was argued',
+        el('div', { class: 'knowhow' },
+          el('h4', null, 'There is no argument here to score'),
+          el('p', null, `All ${G.episodes} conversation${G.episodes === 1 ? '' : 's'} in this chat read as `
+            + 'small talk, logistics or agreement — nobody is contesting anything at length. This section measures how a '
+            + 'disagreement was conducted: sourcing, answering, staying on topic. With no disagreement to measure, '
+            + 'every one of those would be a confident zero about nothing.'),
+          el('p', null, 'Everything above still applies. That is the part worth reading for a chat like this.'))));
+    }
+
+    // The relationship says which section to lead with. It reorders the nav and
+    // scrolls; it does not change a single number.
+    const lead = SECTION_FOR_RELATION[rel];
+    buildSectionNav(lead && made.includes(lead) ? [lead, ...made.filter(x => x !== lead)] : made);
+    $('#lens-blurb').textContent = G.applies
+      ? `One report, read top to bottom. ${G.episodesScored} of ${G.episodes} conversations here ${G.episodesScored === 1 ? "is an argument" : "are arguments"}, and only ${G.episodesScored === 1 ? "that one is" : "those are"} scored.`
+      : 'One report, read top to bottom. Nothing in this chat is an argument, so the last section says so rather than scoring one.';
 
     R.append(el('div', { class: 'caveats' },
       el('strong', null, 'Before you screenshot this at someone'),
       el('ul', null,
         el('li', null, 'Word lists cannot hear sarcasm, and quoting someone else’s insult counts against you.'),
-        el('li', null, 'Romanised Hindi and other mixed languages are only partly covered, so tone and heat undercount them.'),
+        el('li', null, 'Tone and heat undercount every language the sentiment lexicon does not cover, which is all of them except English.'),
         el('li', null, `Comparisons switch off below ${core.MIN_WORDS_FOR_CLAIM} words per person, because short chats say nothing.`),
-        el('li', null, 'Nothing here measures personality, intelligence or mental health. It is a mirror, not a verdict.'))));
+        el('li', null, 'Nothing here measures personality, intelligence, compatibility or mental health. It is a mirror, not a verdict.'))));
 
+    // The written report follows the richest section this chat earned.
+    const reportLens = G.applies ? 'rigor' : 'debate';
     const toast = el('span', { class: 'toast', 'aria-live': 'polite' });
-    const md = () => core.toMarkdown(res, lens);
+    const md = () => core.toMarkdown(res, reportLens);
     const exp = el('div', { class: 'export' },
       el('button', { class: 'btn', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(md()); toast.textContent = 'Copied'; } catch { toast.textContent = 'The browser blocked the clipboard. Download it instead.'; } } }, 'Copy report'));
     if (ENV !== 'artifact') {
       exp.append(
-        el('button', { class: 'btn', type: 'button', onclick: () => download(`threadlens-${lens}.md`, md(), 'text/markdown') }, 'Download .md'),
-        el('button', { class: 'btn', type: 'button', onclick: () => download(`threadlens-${lens}.json`, JSON.stringify(res, null, 1), 'application/json') }, 'Download .json'));
+        el('button', { class: 'btn', type: 'button', onclick: () => download('threadlens-report.md', md(), 'text/markdown') }, 'Download .md'),
+        el('button', { class: 'btn', type: 'button', onclick: () => download('threadlens-report.json', JSON.stringify(res, null, 1), 'application/json') }, 'Download .json'));
     }
     exp.append(el('button', { class: 'btn ghost', type: 'button', onclick: clearAll }, 'Forget this chat'), toast);
     R.append(exp);
@@ -691,8 +739,7 @@
 
   /* -------------------------------------------------------------- findings */
 
-  function findingCards(res, lens) {
-    const F = core.findings(res, lens);
+  function findingCards(res, F) {
     const ul = el('ul', { class: 'finds' });
     for (const f of F) {
       const short = f.short || (f.text.length > 78 ? f.text.slice(0, 74).replace(/\s\S*$/, '') + '…' : f.text);
@@ -716,52 +763,117 @@
     return (hi - lo) / hi;
   }
 
-  function measuresTable(res, keys, idx) {
+  /**
+   * One measure for one person, in whichever view is showing.
+   * A rate answers "who leans on this more"; a total answers "how often did it
+   * actually happen". Showing only the rate leaves a reader unable to tell four
+   * instances from four hundred, which is why both live in the same container.
+   */
+  function measureValue(s, k, M, asTotals) {
+    if (asTotals && M.count) return { v: s.counts ? (s.counts[M.count] || 0) : 0, fmt: 'int' };
+    return { v: s[k], fmt: M.fmt };
+  }
+
+  function measuresTable(res, keys, idx, asTotals) {
     const t = el('table');
     t.append(el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Measure'), res.stats.map(s => el('th', { scope: 'col', class: 'num' }, s.name)))));
     const tb = el('tbody');
     for (const k of keys) {
       const M = core.METRICS[k];
-      const vals = res.stats.map(s => s[k]);
-      const max = Math.max(...vals.map(v => (v == null ? 0 : Math.abs(v))), 1e-9);
+      const cells = res.stats.map(s => measureValue(s, k, M, asTotals));
+      const max = Math.max(...cells.map(c => (c.v == null ? 0 : Math.abs(c.v))), 1e-9);
+      // Only a rate metric has a totals view; a percentage or a median has no
+      // meaningful "total", so its note and value are left alone.
+      const unit = M.fmt === 'rate' ? (asTotals && M.count ? 'times, in total' : 'per 100 words') : null;
+      const note = [unit, M.note].filter(Boolean).join(' · ');
       tb.append(el('tr', null,
-        el('th', { scope: 'row' }, M.label, M.fmt === 'rate' ? el('span', { class: 'note' }, 'per 100 words' + (M.note ? ' · ' + M.note : '')) : M.note ? el('span', { class: 'note' }, M.note) : null),
-        res.stats.map(s => {
-          const fill = el('i', { style: `background:${color(idx[s.name])}` });
-          fill.style.setProperty('--w', s[k] == null ? 0 : Math.abs(s[k]) / max);
-          return el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, core.fmt(s[k], M.fmt)), fill));
+        el('th', { scope: 'row' }, M.label, note ? el('span', { class: 'note' }, note) : null),
+        cells.map((c, i) => {
+          const fill = el('i', { style: `background:${color(idx[res.stats[i].name])}` });
+          fill.style.setProperty('--w', c.v == null ? 0 : Math.abs(c.v) / max);
+          return el('td', { class: 'val' }, el('div', { class: 'bar' }, el('span', null, core.fmt(c.v, c.fmt)), fill));
         })));
     }
     t.append(tb);
     return el('div', { class: 'scroll' }, t);
   }
 
-  function measuresDrawer(res, lens, idx) {
+  function measuresDrawer(res, idx) {
+    // One page means one table: every measure, ranked by how far apart the two
+    // people are, rather than five lens-sized subsets of the same list.
     const keys = Object.keys(core.METRICS)
-      .filter(k => core.METRICS[k].lenses.includes(lens))
       // A clock-derived measure on an undated transcript would be a number about a
       // timeline this page made up a moment ago.
       .filter(k => !(res.undated && core.METRICS[k].needsTime));
     const ranked = keys.slice().sort((a, b) => diffScore(res, b) - diffScore(res, a));
     const top = ranked.slice(0, TOP_DIFFS), rest = ranked.slice(TOP_DIFFS);
-    const panel = el('div', { class: 'panel' },
-      el('h3', null, 'Where you differ most'),
-      el('p', { class: 'sub' }, 'The widest gaps in this lens. Same counting rules for everyone; bars compare across each row.'),
-      measuresTable(res, top, idx));
-    if (rest.length) {
-      panel.append(el('details', null,
-        el('summary', null, `Show the other ${rest.length} measure${rest.length === 1 ? '' : 's'}`),
-        measuresTable(res, rest, idx)));
-    }
+
+    const panel = el('div', { class: 'panel' });
+    const head = el('div', { class: 'panel-head' },
+      el('div', null,
+        el('h3', null, 'Where you differ most'),
+        el('p', { class: 'sub' }, 'The widest gaps in this lens. Same counting rules for everyone; bars compare across each row.')));
+
+    // Both views of the same numbers, in the same container, rather than a rate in
+    // one place and a count somewhere else.
+    const body = el('div');
+    const draw = () => {
+      body.textContent = '';
+      body.append(measuresTable(res, top, idx, state.totals));
+      if (rest.length) {
+        body.append(el('details', null,
+          el('summary', null, `Show the other ${rest.length} measure${rest.length === 1 ? '' : 's'}`),
+          measuresTable(res, rest, idx, state.totals)));
+      }
+    };
+    const seg = el('div', { class: 'seg tiny', role: 'group', 'aria-label': 'How to count' });
+    const btns = [['Per 100 words', false], ['Totals', true]].map(([label, isTotals]) =>
+      el('button', {
+        type: 'button', 'aria-pressed': String(state.totals === isTotals),
+        onclick: () => {
+          if (state.totals === isTotals) return;
+          state.totals = isTotals;
+          for (const b of btns) b.setAttribute('aria-pressed', String(b.dataset.totals === String(state.totals)));
+          draw();
+        },
+      }, label));
+    btns.forEach((b, i) => { b.dataset.totals = String(!!i); seg.append(b); });
+    head.append(seg);
+
+    panel.append(head, body);
+    draw();
     return panel;
   }
 
   /* ---------------------------------------------------------------- charts */
 
-  function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const k of [1, 2, 2.5, 5, 10]) if (k * p >= v) return k * p; return 10 * p; }
+  /**
+   * Gridlines for a y axis: a round step, a top that is a multiple of it, and a
+   * sensible number of lines.
+   *
+   * Two things were wrong before. The ladder was 1/2/2.5/5/10, so a 120-message
+   * peak drew an axis to 200 and the data sat in the bottom half. And the top was
+   * always divided into four, so an axis to 5 put a gridline at 2.5 and labelled it
+   * "3". Here the step is what gets rounded, so every label is exact, and the
+   * candidate that wastes least headroom wins.
+   */
+  function axisTicks(max) {
+    if (!(max > 0)) return { top: 1, step: 0.25 };
+    const p = Math.pow(10, Math.floor(Math.log10(max)) - 1);
+    let best = null;
+    for (const k of [1, 2, 2.5, 4, 5, 10, 20, 25, 50, 100]) {
+      const step = k * p;
+      const lines = Math.ceil(max / step);
+      if (lines < 3 || lines > 6) continue;
+      const top = lines * step;
+      if (!best || top < best.top) best = { top, step };
+    }
+    // Nothing in range (a very flat or very spiky series): fall back to quarters.
+    return best || { top: Math.ceil(max * 4) / 4, step: Math.ceil(max * 4) / 16 };
+  }
   function shortDay(d) { const [y, mo, da] = d.split('-').map(Number); return new Date(y, mo - 1, da).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
 
-  function lineChart(title, sub, xs, series, idx, fmtV, labelX) {
+  function lineChart(title, sub, xs, series, idx, fmtV, labelX, opts) {
     const wrap = el('div', { class: 'chart' });
     const legend = el('div', { class: 'legend' }, series.map(s => el('span', null, el('i', { class: 'sw', style: `background:${color(idx[s.name])}` }), s.name)));
     const panel = el('div', { class: 'panel' }, el('h3', null, title), el('p', { class: 'sub' }, sub), legend, wrap);
@@ -769,21 +881,58 @@
     const W = 520, H = 200, m = { l: 34, r: 12, t: 10, b: 26 };
     const vals = series.flatMap(s => s.pts).filter(v => v != null);
     const isUnit = vals.every(v => v <= 1);
-    const yMax = isUnit ? Math.max(0.2, Math.ceil(Math.max(...vals, 0) * 10) / 10) : niceMax(Math.max(...vals, 1));
-    const x = i => m.l + (xs.length === 1 ? (W - m.l - m.r) / 2 : (i * (W - m.l - m.r)) / (xs.length - 1));
+    const axis = axisTicks(Math.max(...vals, isUnit ? 0.1 : 1));
+    const yMax = axis.top;
+
+    /* Where each point sits along the x axis.
+     *
+     * `opts.at` turns a label into a number — for the day series, a timestamp — so
+     * the axis is proportional to real time. Without it, 30 days scattered over
+     * three years were drawn evenly spaced, which put a fortnight and an eleven-
+     * month silence the same distance apart and made the line meaningless.
+     * Ordinal charts (message #1, #2, …) pass nothing and keep even spacing.
+     */
+    const span = W - m.l - m.r;
+    const at = (opts && opts.at) || null;
+    let px;
+    if (xs.length === 1) px = [m.l + span / 2];
+    else if (!at) px = xs.map((_, i) => m.l + (i * span) / (xs.length - 1));
+    else {
+      const t = xs.map(at);
+      const lo = Math.min(...t), hi = Math.max(...t);
+      const range = hi - lo;
+      px = range > 0 ? t.map(v => m.l + ((v - lo) / range) * span)
+        : xs.map((_, i) => m.l + (i * span) / Math.max(xs.length - 1, 1));
+    }
+    const x = i => px[i];
     const y = v => H - m.b - (v / yMax) * (H - m.t - m.b);
     const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': title });
     const g = sv('g', { class: 'grid' });
-    for (let i = 0; i <= 4; i++) {
-      const v = (yMax * i) / 4;
+    // Labels are the exact gridline value, formatted to the step's own precision,
+    // so a line at 2.5 is never labelled "3".
+    // Decimals to show: the fewest that still render the step exactly. Counting
+    // them off the exponent is wrong for a step like 0.25, which needs two — and
+    // getting it wrong is precisely how a gridline at 0.25 came out labelled "0.3".
+    let dp = 0;
+    while (dp < 8 && Math.abs(Number(axis.step.toFixed(dp)) - axis.step) > 1e-12) dp++;
+    for (let v = 0; v <= yMax + 1e-9; v += axis.step) {
       g.append(sv('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }));
-      const t = sv('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end' }); t.textContent = isUnit ? v.toFixed(1) : Math.round(v); svg.append(t);
+      const t = sv('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end' });
+      t.textContent = v.toFixed(dp); svg.append(t);
     }
     svg.prepend(g);
-    const every = Math.max(1, Math.ceil(xs.length / 6));
+    // Labels are spaced by PIXELS, not by index. On a time axis the points bunch up
+    // wherever the conversation was busy, and every-Nth-index would stack six labels
+    // on top of each other there and leave the quiet stretches bare.
+    const MIN_LABEL_GAP = span / 6;
+    let lastLabelAt = -Infinity;
     xs.forEach((d, i) => {
-      if (i % every && i !== xs.length - 1) return;
-      const t = sv('text', { x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === xs.length - 1 ? 'end' : 'middle' });
+      const isLast = i === xs.length - 1;
+      if (!isLast && x(i) - lastLabelAt < MIN_LABEL_GAP) return;
+      // Never let the last label collide with the one before it.
+      if (isLast && x(i) - lastLabelAt < MIN_LABEL_GAP / 2 && xs.length > 1) return;
+      lastLabelAt = x(i);
+      const t = sv('text', { x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : isLast ? 'end' : 'middle' });
       t.textContent = labelX(d); svg.append(t);
     });
     for (const s of series) {
@@ -811,7 +960,10 @@
     hit.addEventListener('pointermove', ev => {
       const r = svg.getBoundingClientRect();
       const px2 = ((ev.clientX - r.left) / r.width) * W;
-      const i = Math.max(0, Math.min(xs.length - 1, Math.round(xs.length === 1 ? 0 : ((px2 - m.l) / (W - m.l - m.r)) * (xs.length - 1))));
+      // Nearest point by pixel: with a real time axis the spacing is uneven, so the
+      // old linear inversion pointed at the wrong day.
+      let i = 0;
+      for (let k = 1; k < px.length; k++) if (Math.abs(px[k] - px2) < Math.abs(px[i] - px2)) i = k;
       cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
       tip.hidden = false;
       tip.textContent = labelX(xs[i]) + ' · ' + series.map(s => `${s.name}: ${s.pts[i] == null ? '—' : fmtV(s.pts[i])}`).join(' · ');
@@ -840,7 +992,15 @@
     }
     const xs = res.series.map(d => d.day);
     const series = res.people.map(p => ({ name: p, pts: res.series.map(d => (kind === 'heat' ? d.per[p].heat : d.per[p].n)) }));
-    return lineChart(title, sub, xs, series, idx, v => (kind === 'heat' ? v.toFixed(2) : String(v)), shortDay);
+    // The x axis is real time. `res.series` only carries days that had messages, so
+    // spacing them evenly would draw a two-day gap and an eleven-month silence the
+    // same width apart.
+    const span = res.range.days > 1
+      ? `${core.fmtDate(res.range.from)} to ${core.fmtDate(res.range.to)}, spaced by date`
+      : null;
+    return lineChart(title, span ? sub + ' · ' + span : sub, xs, series, idx,
+      v => (kind === 'heat' ? v.toFixed(2) : String(v)), shortDay,
+      { at: d => Date.parse(d) });
   }
 
   function driftPanel(res, idx) {
@@ -1078,19 +1238,19 @@
     if (t && looksLikeChat) { showFileCard('Pasted text', t.length); ingest(async () => t, 'Pasted conversation'); }
   });
   ['#anon', '#order'].forEach(s => $(s).addEventListener('change', rerun));
-  $('#relation').addEventListener('change', () => {
-    const l = LENS_FOR_RELATION[$('#relation').value];
-    if (l && !state.lensPinned) state.lens = l;
-    if (state.res) render();
-  });
+  // The relationship reorders the section nav and nothing else.
+  $('#relation').addEventListener('change', () => { if (state.res) render(); });
   $('#showq').addEventListener('change', () => { if (state.res) render(); });
-  document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { state.lens = b.dataset.lens; state.lensPinned = true; render(); }));
-  addEventListener('resize', movePill);
-
-  // A lens can be deep-linked (#rigor). Only exact lens names are honoured, so the
-  // page anchors (#faq, #privacy) keep working.
+  // A section can be deep-linked. The old lens names still work as anchors, so a
+  // link to #rigor from anywhere keeps landing on the right part of the report.
+  const LEGACY_ANCHOR = { rigor: 'rigor', debate: 'tone', overview: 'summary', personal: 'tone', work: 'timeline' };
   const fromHash = location.hash.slice(1);
-  if (core.LENSES[fromHash]) state.lens = fromHash;
+  if (LEGACY_ANCHOR[fromHash]) {
+    addEventListener('load', () => {
+      const t = $('#sec-' + LEGACY_ANCHOR[fromHash]);
+      if (t) t.scrollIntoView({ behavior: 'auto', block: 'start' });
+    }, { once: true });
+  }
 
   // Open in a working state: the synthetic sample, clearly labelled as such.
   ingest(async () => SAMPLE, 'Sample', true);

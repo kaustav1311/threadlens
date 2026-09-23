@@ -29,6 +29,13 @@ def main(argv=None):
     a.add_argument("--anon", action="store_true", help="Replace names with Person A, B…")
     a.add_argument("--date-order", choices=["auto", "DMY", "MDY", "YMD"], default="auto")
     a.add_argument("--deep", action="store_true", help="Add local ML models (needs: pip install 'threadlens[deep]')")
+    a.add_argument("--backend", choices=["hf", "ollama"], default="hf",
+                   help="Which local models --deep should use. 'hf' is Detoxify + the fallacy and NLI "
+                        "models; 'ollama' asks a model already running on this machine to re-judge the "
+                        "claim ledger. Both are offline; neither decides whether a claim is true.")
+    a.add_argument("--model", default=None, help="Model name for --backend ollama (default: qwen2.5:3b)")
+    a.add_argument("--ollama-host", default=None,
+                   help="Where the local ollama server is (default: $OLLAMA_HOST, else http://127.0.0.1:11434)")
     a.add_argument("--md", type=Path, help="Write Markdown report here")
     a.add_argument("--json", type=Path, help="Write JSON results here")
     a.add_argument("--ledger", type=Path, help="Write the Rigor claim ledger as JSON, for a human or an LLM to verify. "
@@ -47,7 +54,21 @@ def main(argv=None):
     text = read_export(args.file.read_bytes(), args.file.name)
     res = Analyzer().analyse(parse_chat(text, args.date_order), anonymise=args.anon)
     deep = None
-    if args.deep:
+    if args.deep and args.backend == "ollama":
+        # A second opinion from a model already running on this machine, on the one
+        # judgement a word list cannot make: assertion versus strongly-worded opinion.
+        from .ollama import DEFAULT_MODEL, OllamaUnavailable, rejudge_ledger, summarise
+
+        model = args.model or DEFAULT_MODEL
+        try:
+            rejudged = rejudge_ledger(res, model=model, host=args.ollama_host)
+        except OllamaUnavailable as e:
+            # A model that is not running must not cost you the rest of the report.
+            sys.stderr.write(f"ollama backend skipped: {e}\n")
+        else:
+            deep = {"backend": "ollama", "model": model,
+                    "ledger_review": rejudged, "agreement": summarise(rejudged)}
+    elif args.deep:
         from .deep import run_deep
 
         deep = run_deep(res)

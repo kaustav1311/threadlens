@@ -96,12 +96,32 @@ test('the page stays small enough to download and run offline', () => {
   assert.ok(kb < cap * 0.95 || process.env.CI, `dist/index.html is at ${Math.round(kb / cap * 100)}% of the budget`);
 });
 
-test('the page declares the Rigor lens and the relationship keywords it should be found by', () => {
+test('the page declares its sections and the keywords it should be found by', () => {
   const html = dist();
   assert.match(html, /<meta name="description" content="[^"]{80,}"/);
   for (const kw of ['relationship', 'group chat', 'whatsapp chat analysis'])
     assert.ok(html.toLowerCase().includes(kw), `missing keyword: ${kw}`);
-  assert.match(html, /data-lens="rigor"/);
+  // The report is one page built at runtime, so what the HTML must carry is the
+  // section ids the nav and the old #rigor-style deep links resolve against.
+  const app = fs.readFileSync(path.join(root, 'web/src/app.js'), 'utf8');
+  for (const id of ['summary', 'measures', 'timeline', 'tone', 'rigor'])
+    assert.ok(app.includes(`'${id}'`), `section "${id}" is not built by app.js`);
+  assert.match(app, /LEGACY_ANCHOR/, 'old lens anchors must still resolve to a section');
+});
+
+test('the report is one page, not five lenses', () => {
+  // The five-lens switcher is gone: five views of the same containers meant
+  // reading a chat five times to find the one that applied to it.
+  const html = dist();
+  assert.ok(!/data-lens=/.test(html), 'a lens switcher is still in the markup');
+  const app = fs.readFileSync(path.join(root, 'web/src/app.js'), 'utf8');
+  assert.ok(!/state\.lens\b/.test(app), 'app.js still carries a selected lens');
+  assert.ok(!/LENS_FOR_RELATION/.test(app), 'the relationship must pick a section, not a lens');
+  // ...and the relationship still may not reach a number.
+  const onChange = app.slice(app.indexOf("$('#relation').addEventListener"));
+  const body = onChange.slice(0, onChange.indexOf('\n  $('));
+  assert.ok(!/analys|score|METRICS|rigor/i.test(body),
+    'the relationship handler must only re-render, never touch scoring');
 });
 
 /* ------------------------------------------ the worker copy of core.js */
@@ -162,4 +182,62 @@ test('the headline carousel stops rotating when motion is reduced', () => {
   const timer = run.indexOf('setTimeout');
   assert.ok(guard > -1 && timer > guard, 'the reduced-motion guard must come before the advance timer');
   assert.ok(/reduceMotion\(\)[^;]{0,40}\)\s*return;/.test(run), 'it must return before scheduling anything');
+});
+
+test('chart axis labels are the exact gridline value', () => {
+  // A gridline at 2.5 labelled "3", or one at 0.25 labelled "0.3", quietly lies
+  // about every point read off it. The step is what gets rounded, never the label.
+  const app = fs.readFileSync(path.join(root, 'web/src/app.js'), 'utf8');
+  const fn = app.slice(app.indexOf('function axisTicks'), app.indexOf('function shortDay'));
+  const axisTicks = new Function(fn + '; return axisTicks;')();
+  const decimals = v => { let d = 0; while (d < 8 && Math.abs(Number(v.toFixed(d)) - v) > 1e-12) d++; return d; };
+  for (const max of [0.71, 0.02, 0.85, 1, 3, 5, 47, 120, 200, 1240]) {
+    const a = axisTicks(max);
+    assert.ok(a.top >= max, `axis top ${a.top} is below the data at ${max}`);
+    assert.ok(a.top <= max * 1.35, `axis top ${a.top} wastes too much height above ${max}`);
+    const dp = decimals(a.step);
+    for (let v = 0; v <= a.top + 1e-9; v += a.step) {
+      assert.ok(Math.abs(Number(v.toFixed(dp)) - v) < 1e-9,
+        `gridline ${v} cannot be written exactly with ${dp} decimals (max ${max})`);
+    }
+    const lines = Math.round(a.top / a.step);
+    assert.ok(lines >= 3 && lines <= 7, `${lines} gridlines for a max of ${max}`);
+  }
+});
+
+/* --------------------------------- the local-model build stays quarantined */
+
+test('the sealed page and the local-model build cannot be confused', () => {
+  const LOCAL = path.join(root, 'dist/index-local.html');
+  assert.ok(fs.existsSync(LOCAL), 'the build should produce dist/index-local.html');
+  const sealed = dist(), local = fs.readFileSync(LOCAL, 'utf8');
+  const cspOf = h => h.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+
+  // The published page never gains the ability to open a connection.
+  assert.match(cspOf(sealed), /connect-src 'none'/);
+  // The local build may reach exactly one place, on this machine.
+  const localConnect = cspOf(local).match(/connect-src ([^;]+)/)[1].trim();
+  assert.strictEqual(localConnect, 'http://127.0.0.1:11434',
+    'the local build may only reach a loopback model server');
+
+  // A page that CAN reach the network must not carry the sealed page's claim that
+  // it cannot. That is the whole reason this is a separate file.
+  assert.ok(sealed.includes("connect-src 'none'</span>, so the browser refuses"),
+    'the sealed page must keep its network claim');
+  assert.ok(!local.includes('so the browser refuses to let it open a network connection at all'),
+    'the local build still claims it cannot open a connection');
+  assert.ok(local.includes('Local-model build.'), 'the local build must say what it is, at the top');
+  assert.ok(!sealed.includes('Local-model build.'), 'the sealed page must not carry the local banner');
+  assert.match(local, /noindex/, 'the local build must not be indexable if it is ever served');
+
+  // Build markers are an implementation detail and must not ship.
+  assert.ok(!/BUILD:/.test(sealed) && !/BUILD:/.test(local), 'a build marker leaked into a page');
+});
+
+test('only the sealed page is ever deployed', () => {
+  const wf = fs.readFileSync(path.join(root, '.github/workflows/pages.yml'), 'utf8');
+  assert.ok(wf.includes('dist/index.html'), 'the workflow must publish the sealed page');
+  assert.ok(!wf.includes('index-local'), 'the local-model build must never be deployed');
+  const ignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
+  assert.ok(ignore.includes('dist/index-local.html'), 'the local build must not be committable');
 });

@@ -80,8 +80,15 @@ reason an argument goes nowhere.
 ### Rhetorical cues
 
 Regex phrase patterns for whataboutism, false choices, exit-then-return, unfalsifiable certainty, requests
-for evidence, and personal attacks. Every match links to the message that produced it, because **a phrase
-match is a prompt to re-read, not a finding.**
+for evidence, personal attacks, and **caveats** — the one cue family that marks a good move, qualifying a claim
+rather than asserting it flat. Every match links to the message that produced it, because **a phrase match is
+a prompt to re-read, not a finding.**
+
+Each family carries its own positive and negative examples in `lexicons/lexicons.json` under
+`_rhetoric_examples`, and both suites assert that every family still matches its examples and still rejects
+its counter-examples. A cue that quietly stops matching otherwise shows up as a column of zeroes, which reads
+exactly like "nobody did this". That test is what caught `what about` firing on *"What about Tuesday, are you
+free?"* — scheduling, not whataboutism, and now excluded explicitly.
 
 ---
 
@@ -127,17 +134,31 @@ you for someone else's silence.
 
 ### What counts as a claim
 
-A sentence is a claim when **all** of these hold:
+A claim is an **assertion about the world**. Not a plan, not advice, not an opinion, and not a remark about
+the conversation itself. A sentence qualifies when it is at least 5 tokens, carries a verb, and survives every
+rejection below:
 
-1. it contains no `?`;
-2. it is at least 6 tokens long;
-3. it contains a factual verb (`is, was, has, did, said, passed, ruled, caps, raised, …`, plus Hinglish
-   `hai, tha, kiya, kaha, …`);
-4. it does **not** open with an opinion marker (`I think`, `I feel`, `in my opinion`, `mujhe lagta`, …);
-5. it does **not** open with an intent marker (`if `, `let's`, `I will`, `happy to`, `can you`, …).
+| Rejected | Because | Example |
+|---|---|---|
+| Question | it asks rather than asserts | *Where did you see four hours?* |
+| Unmarked question | chat writers drop the `?` constantly | *How's the new place been* |
+| Opinion opener | flagged as a view, not a fact | *I think the report is wrong* |
+| Intent opener | a statement of what someone will do | *If you have a figure I will look at it* |
+| Modality | obligation, plan, advice, request | *The place has to be clean* · *try the bigger complexes* |
+| Interior state | nobody can check how you feel | *we love the little ones* · *I don't care* |
+| Meta-talk | about the conversation, not the world | *you asked for a number and that's the number* |
 
-Rules 4 and 5 exist because without them *"If you have a figure I will look at it"* was being filed as an
-unsourced factual claim, which made careful speakers look vague.
+Meta-talk is only rejected when the sentence carries **nothing checkable**. *"I said ninety minutes was the
+ward office figure"* reports what was said and also names a figure, so it stays a claim.
+
+Two things the verb test had to learn. The tokeniser splits `it's` into `it` + `s`, so a copula contraction
+left the gate finding no verb at all; contractions are expanded before the check. And a bare citation —
+*"Section 3 of the same report, page 12"* — has no verb and is still a claim about where something can be
+checked, so a named source plus a number or date is accepted on its own.
+
+**Measured accuracy: 91.1% macro-F1** on the labelled set (§6a). The errors that remain are evaluative
+sentences: *"It was violence for a political cause"* is a claim, *"It is political in every way possible"* is
+not, and no word list sees the difference.
 
 ### What counts as a source
 
@@ -356,6 +377,23 @@ not enough to justify a decimal place; treat differences under a few points as n
 somewhat easier than the real chat it was modelled on — on the real export the question classifier finds
 fewer rhetorical questions than a human would, because the rhetorical frames are written for English and
 Hindi and not for Bengali.
+
+### The second opinion, and why it is optional
+
+The residual above is what the optional local-model tier is for:
+
+```bash
+threadlens analyse chat.txt --deep --backend ollama --model qwen2.5:3b
+```
+
+It asks a model running on your own machine the same question the claim gate asks, and prints where the two
+disagree. It never decides whether a claim is true, it changes no score, and the heuristic verdict stays
+beside its own. It is loopback-only and off by default; the web app cannot reach it at all.
+
+On the hardware this was developed on (4 GB VRAM) the largest model that loads is a 3B, and a 3B is close to
+guessing at this task — it disputed `Two officers were suspended in November`, which is unambiguously a claim.
+So when agreement falls below 50% the report says outright that the model is the likelier problem. Treat the
+disagreement list as somewhere to look, never as a correction to apply.
 
 Re-run `make eval` after any change to the gates or the lexicons. A change that improves a score it was
 not aimed at deserves as much suspicion as one that breaks a score it was.

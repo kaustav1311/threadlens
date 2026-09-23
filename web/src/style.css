@@ -502,3 +502,33 @@ footer { margin-top: var(--space-7); border-top: var(--rule) solid var(--ink); p
 .clip-note { font-family: var(--font-mono); font-size: var(--text-xs); margin-left: auto; }
 .btn.tiny { font-size: var(--text-xs); padding: 6px 10px; }
 @media (max-width: 560px) { .clip-note { margin-left: 0; } }
+
+/* A panel that carries its own control: heading on the left, the switch on the
+   right, both on the same baseline as the table below them. */
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-4); }
+.panel-head h3, .panel-head .sub { margin: 0; }
+.seg.tiny { display: inline-flex; border: 1px solid var(--line); background: var(--raise); flex: none; }
+.seg.tiny button { appearance: none; border: 0; background: none; cursor: pointer; font: inherit; font-size: var(--text-xs); font-family: var(--font-mono); letter-spacing: var(--track-mono); color: var(--muted); padding: var(--space-2) var(--space-3); }
+.seg.tiny button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+.seg.tiny button:not([aria-pressed="true"]):hover { color: var(--ink); }
+
+/* The section nav replaces the lens switcher: it moves you down one page rather
+   than swapping between five views of the same containers. Links, not buttons,
+   because each one is a real anchor. */
+.lensbar .seg a {
+  font-family: var(--font-mono); font-size: var(--text-sm); font-weight: var(--weight-semi);
+  letter-spacing: var(--track-mono); line-height: 1; color: var(--ink-2); text-decoration: none;
+  border-right: 1px solid var(--line); padding: 11px 16px; white-space: nowrap;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.lensbar .seg a:last-child { border-right: 0; }
+.lensbar .seg a:hover { color: var(--accent-ink); background: var(--accent); }
+
+/* Each section gets a rule and a heading, so one long page still reads as parts. */
+.report-section { margin-top: var(--space-8); }
+.report-section:first-of-type { margin-top: var(--space-6); }
+.section-h {
+  font-family: var(--font-serif); font-size: var(--text-lg); letter-spacing: var(--track-lg);
+  border-top: var(--rule) solid var(--ink); padding-top: var(--space-3); margin-bottom: var(--space-5);
+}
+.undated-note { margin-top: var(--space-5); max-width: var(--measure); }

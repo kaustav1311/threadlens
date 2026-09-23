@@ -14,6 +14,8 @@ The Python package mirrors the same scoring for the CLI, a self-hosted API, and 
  web/vendor/jszip.min.js                                                                             │
         │                                                                                            │
  scripts/build.mjs ──► dist/index.html             full page, CSP: connect-src 'none', script hashes │
+                  ├──► dist/index-local.html        SEPARATE build, CSP allows 127.0.0.1:11434 only  │
+                  │                                 gitignored, never deployed, own privacy copy      │
                   └──► dist/threadlens-artifact.html  body fragment for artifact hosts (no downloads) │
  scripts/rigor-dump.mjs  emits the JS rigor result so pytest can diff it against Python              │
  scripts/items.mjs   the units the eval gold set is labelled over — labeller and harness share it    │
@@ -23,15 +25,20 @@ The Python package mirrors the same scoring for the CLI, a self-hosted API, and 
  python/threadlens/  parser.py · metrics.py · report.py (mirror core.js) ◄── data/*.json (make sync) ┘
                      rigor.py  (mirrors the rigor section of core.js, constant for constant)
                      deep.py   (Detoxify + fallacy classifier + local NLI self-contradiction, [deep])
-                     cli.py    (`threadlens analyse|serve`, `--lens rigor`, `--ledger out.json`)
+                     ollama.py (optional second opinion from a local model; --backend ollama, loopback only)
+                     cli.py    (`threadlens analyse|serve`, `--lens rigor`, `--ledger out.json`, `--backend`)
                      server.py (FastAPI, in-memory per-IP rate limits, 10 MB cap, no disk, no body logs)
 ```
 Data flow: export text → `parseChat` (Android/iOS, 12/24h, date-order detection) → messages → `analyse` (per-person
 counts, per-100-word rates, heat, sentiment, moral words, rhetoric regexes, reply times, day series) → `findings(lens)`
-(symmetric comparisons, off below 150 words/person) → UI or Markdown/JSON.
+(symmetric comparisons, off below 150 words/person) → UI or Markdown/JSON. `findings(lens)` still takes a lens
+because the Markdown report does; the page merges every lens and de-duplicates. `findings(lens)` still takes a lens
+because the Markdown report does; the page merges all of them and de-duplicates.
 
-`res.rigor` is a **lazy getter**: it is the most expensive pass and only one lens needs it, so four of the five
-lenses never pay for it. Touching `res.rigor` computes it once and caches it.
+`res.rigor` is a **lazy getter**: it is the most expensive pass, so nothing pays for it until a caller touches it.
+Touching `res.rigor` computes it once and caches it. The UI is **one page**, not five lenses: `render()` emits
+sections (summary · measures · timeline · tone · rigor) and a section only appears when the chat supports it.
+The relationship selector reorders the section nav and nothing else.
 
 Large exports (≥400k characters) are analysed in a **Web Worker** built from a Blob of `core.js`, which is why the
 CSP allows `worker-src blob:`. The worker's copy of the source is read back off the page's own
@@ -41,7 +48,8 @@ the main thread and the result is identical.
 ## Commands
 - `make test`: builds, then JS tests (`node --test "web/test/*.test.js"`) + Python tests (`cd python && pytest`)
 - `make build`: dist files. Rebuild before committing UI changes; dist is committed so the page works offline.
-  The build **fails** if `dist/index.html` exceeds 400 KB.
+  The build **fails** over `BUDGET_KB` in build.mjs (600 KB; the build is ~385 KB). If it ever gets close again,
+  pack the data rather than raise the number — VADER is inlined packed for exactly this reason, which is worth 23 KB.
 - `make sync`: copy lexicons into python/threadlens/data (a test fails if they drift)
 - `make eval`: score the claim / question / is-it-an-argument gates against the hand-labelled
   `samples/labels_banglish_mixed.json`. **The primary gate for any scoring change** — `make test` proves the
@@ -68,6 +76,20 @@ the main thread and the result is identical.
    state, not sit at zero. Asserted in `web/test/build.test.js`.
 
 ## Scoring decisions worth not re-litigating
+- **One report, not five lenses.** Five views of the same containers meant reading a chat five times to find
+  the one that applied to it. Sections are earned: no timestamps → no timeline and no clip bar; no argument →
+  the rigor section says so instead of scoring one. Old `#rigor`-style links still resolve, via `LEGACY_ANCHOR`.
+- **Rates and totals live in the same container.** A rate answers "who leans on this more", a total answers
+  "how often did it actually happen", and a rate alone cannot tell four instances from four hundred. Every
+  `fmt: 'rate'` metric carries a `count:` naming its raw-count key, and `stats[].counts` holds them.
+- **Chart axes round the STEP, never the label.** The old ladder drew a 120-message peak on an axis to 200,
+  and dividing any top into four put a gridline at 2.5 and labelled it "3". `axisTicks` picks a round step, a
+  top that is a multiple of it, and 3–6 lines. The day chart's x axis is proportional to real time, so a
+  two-day gap and an eleven-month silence are no longer drawn the same width apart.
+- **The local-model tier never touches the web app.** `--backend ollama` gives a second opinion on the one
+  judgement a word list cannot make (assertion vs strongly-worded opinion). Loopback only, off by default,
+  and it never decides whether a claim is TRUE — it keeps the heuristic's verdict beside its own. Low
+  agreement usually means the model is too small rather than the ledger being wrong, and the report says so.
 - **Rigor scores the arguments in a chat, never the whole chat.** Applicability is decided *per episode*:
   an episode qualifies when people are both asserting (claims/message) and disagreeing (markers/message).
   Either alone is not an argument — a stream of links is not, nor is a round of swearing. `rigor.applies`
@@ -102,6 +124,11 @@ the main thread and the result is identical.
   drift and the ledger are all computed on the clip. A bare `to` date means the whole of that day.
 
 ## Gotchas already paid for
+- **`dist/index-local.html` can reach the network; `dist/index.html` never can.** They are separate files on
+  purpose. The local build carries its own privacy copy (a page that CAN open a connection must not repeat the
+  sealed page's claim that it cannot), is gitignored, is `noindex`, and the Pages workflow copies only
+  `index.html`. `build.test.js` asserts all four. The swap is driven by `<!--BUILD:...-->` markers in
+  body.html and the build throws if one goes missing, so a copy edit cannot silently skip it.
 - **An opener list matched with `indexOf` matches inside words.** `intent_opener` held a bare `"id "` and
   `"ill "`, so `"sa|id i|t was ninety minutes"` and `"st|ill s|ays"` both matched and any sentence with
   *said*, *did* or *still* near its start was silently dropped as a statement of intent. Openers are

@@ -14,3 +14,7 @@ private/
 
 # Local labelling output. Derived from a real chat, so it never gets committed.
 dev/out/
+
+# The local-model build can reach the network. It is for your machine only and is
+# never deployed: Pages publishes dist/index.html.
+dist/index-local.html
